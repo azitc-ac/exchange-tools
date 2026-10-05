@@ -50,6 +50,25 @@ foreach ($t in 'MailContactEditor', 'LogViewer', 'AcmeExchange') {
     Check "$t : RUECKBAU Tag v0.0.1 wirft" { Assert-ToolVersion -Path "$t/$($meta.Main)" -Expected '0.0.1' } $true
 }
 
+Write-Host "`n######## D0. Bauen, was die folgenden Schritte brauchen ########"
+# Die EXE-Dateien sind nicht versioniert - auf einem frischen Klon gibt es sie nicht.
+# Dieser Test muss sie deshalb selbst erzeugen, so wie der Workflow es tut; sonst
+# prüft er nur, was zufällig noch im Arbeitsverzeichnis liegt.
+if (-not (Get-Module -ListAvailable ps2exe)) {
+    throw 'Das Modul ps2exe fehlt - ohne es lässt sich die Release-Kette nicht prüfen. Install-Module ps2exe -Scope CurrentUser'
+}
+foreach ($t in 'MailContactEditor', 'LogViewer', 'AcmeExchange') {
+    $m = Import-PowerShellDataFile "$t/release.psd1"
+    if (-not $m.Build) { continue }
+    try {
+        & "./$t/$($m.Build)" -Root (Resolve-Path $t).Path *>&1 | Out-Null
+        $pass++; Write-Host "  OK   $t gebaut ($($m.Build))" -ForegroundColor Green
+    }
+    catch {
+        $fail++; Write-Host "  FEHL $t : Build scheiterte - $($_.Exception.Message)" -ForegroundColor Red
+    }
+}
+
 Write-Host "`n######## D. Artefakte einsammeln (MailContactEditor, einzelne EXE) ########"
 $tool = 'MailContactEditor'
 $meta = Import-PowerShellDataFile "$tool/release.psd1"
