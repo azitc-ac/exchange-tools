@@ -1,0 +1,220 @@
+<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">
+  <Obj RefId="0">
+    <TN RefId="0">
+      <T>Microsoft.PowerShell.Commands.PSRepositoryItemInfo</T>
+      <T>System.Management.Automation.PSCustomObject</T>
+      <T>System.Object</T>
+    </TN>
+    <MS>
+      <S N="Name">Posh-ACME</S>
+      <Version N="Version">4.34.0</Version>
+      <S N="Type">Module</S>
+      <S N="Description">ACME protocol client for obtaining certificates using Let's Encrypt (or other ACME compliant CA)</S>
+      <S N="Author">Ryan Bolger</S>
+      <S N="CompanyName">rmbolger</S>
+      <S N="Copyright">(c) 2018 Ryan Bolger. All rights reserved.</S>
+      <DT N="PublishedDate">2026-08-23T15:50:05+02:00</DT>
+      <Obj N="InstalledDate" RefId="1">
+        <DT>2026-09-11T16:35:15.2971521+02:00</DT>
+        <MS>
+          <Obj N="DisplayHint" RefId="2">
+            <TN RefId="1">
+              <T>Microsoft.PowerShell.Commands.DisplayHintType</T>
+              <T>System.Enum</T>
+              <T>System.ValueType</T>
+              <T>System.Object</T>
+            </TN>
+            <ToString>DateTime</ToString>
+            <I32>2</I32>
+          </Obj>
+        </MS>
+      </Obj>
+      <Nil N="UpdatedDate" />
+      <URI N="LicenseUri">https://github.com/rmbolger/Posh-ACME/blob/main/LICENSE</URI>
+      <URI N="ProjectUri">https://github.com/rmbolger/Posh-ACME</URI>
+      <Nil N="IconUri" />
+      <Obj N="Tags" RefId="3">
+        <TN RefId="2">
+          <T>System.Object[]</T>
+          <T>System.Array</T>
+          <T>System.Object</T>
+        </TN>
+        <LST>
+          <S>LetsEncrypt</S>
+          <S>ssl</S>
+          <S>tls</S>
+          <S>certificates</S>
+          <S>acme</S>
+          <S>Linux</S>
+          <S>Mac</S>
+          <S>PSModule</S>
+          <S>PSEdition_Desktop</S>
+          <S>PSEdition_Core</S>
+        </LST>
+      </Obj>
+      <Obj N="Includes" RefId="4">
+        <TN RefId="3">
+          <T>System.Collections.Hashtable</T>
+          <T>System.Object</T>
+        </TN>
+        <DCT>
+          <En>
+            <S N="Key">Function</S>
+            <Obj N="Value" RefId="5">
+              <TNRef RefId="2" />
+              <LST>
+                <S>Complete-PAOrder</S>
+                <S>Export-PAAccountKey</S>
+                <S>Get-DnsAcctLabel</S>
+                <S>Get-KeyAuthorization</S>
+                <S>Get-PAAccount</S>
+                <S>Get-PAAuthorization</S>
+                <S>Get-PACertificate</S>
+                <S>Get-PAOrder</S>
+                <S>Get-PAPlugin</S>
+                <S>Get-PAPluginArgs</S>
+                <S>Get-PAProfile</S>
+                <S>Get-PAServer</S>
+                <S>Install-PACertificate</S>
+                <S>Invoke-HttpChallengeListener</S>
+                <S>New-PAAccount</S>
+                <S>New-PACertificate</S>
+                <S>New-PAOrder</S>
+                <S>New-PAAuthorization</S>
+                <S>Publish-Challenge</S>
+                <S>Publish-DnsPersistChallenge</S>
+                <S>Remove-PAAccount</S>
+                <S>Remove-PAOrder</S>
+                <S>Remove-PAServer</S>
+                <S>Revoke-PAAuthorization</S>
+                <S>Revoke-PACertificate</S>
+                <S>Save-Challenge</S>
+                <S>Send-ChallengeAck</S>
+                <S>Set-PAAccount</S>
+                <S>Set-PAOrder</S>
+                <S>Set-PAServer</S>
+                <S>Submit-ChallengeValidation</S>
+                <S>Submit-OrderFinalize</S>
+                <S>Submit-Renewal</S>
+                <S>Unpublish-Challenge</S>
+                <S>Unpublish-DnsPersistChallenge</S>
+              </LST>
+            </Obj>
+          </En>
+          <En>
+            <S N="Key">RoleCapability</S>
+            <Obj N="Value" RefId="6">
+              <TNRef RefId="2" />
+              <LST />
+            </Obj>
+          </En>
+          <En>
+            <S N="Key">Command</S>
+            <Obj N="Value" RefId="7">
+              <TNRef RefId="2" />
+              <LST>
+                <S>Complete-PAOrder</S>
+                <S>Export-PAAccountKey</S>
+                <S>Get-DnsAcctLabel</S>
+                <S>Get-KeyAuthorization</S>
+                <S>Get-PAAccount</S>
+                <S>Get-PAAuthorization</S>
+                <S>Get-PACertificate</S>
+                <S>Get-PAOrder</S>
+                <S>Get-PAPlugin</S>
+                <S>Get-PAPluginArgs</S>
+                <S>Get-PAProfile</S>
+                <S>Get-PAServer</S>
+                <S>Install-PACertificate</S>
+                <S>Invoke-HttpChallengeListener</S>
+                <S>New-PAAccount</S>
+                <S>New-PACertificate</S>
+                <S>New-PAOrder</S>
+                <S>New-PAAuthorization</S>
+                <S>Publish-Challenge</S>
+                <S>Publish-DnsPersistChallenge</S>
+                <S>Remove-PAAccount</S>
+                <S>Remove-PAOrder</S>
+                <S>Remove-PAServer</S>
+                <S>Revoke-PAAuthorization</S>
+                <S>Revoke-PACertificate</S>
+                <S>Save-Challenge</S>
+                <S>Send-ChallengeAck</S>
+                <S>Set-PAAccount</S>
+                <S>Set-PAOrder</S>
+                <S>Set-PAServer</S>
+                <S>Submit-ChallengeValidation</S>
+                <S>Submit-OrderFinalize</S>
+                <S>Submit-Renewal</S>
+                <S>Unpublish-Challenge</S>
+                <S>Unpublish-DnsPersistChallenge</S>
+              </LST>
+            </Obj>
+          </En>
+          <En>
+            <S N="Key">DscResource</S>
+            <Obj N="Value" RefId="8">
+              <TNRef RefId="2" />
+              <LST />
+            </Obj>
+          </En>
+          <En>
+            <S N="Key">Workflow</S>
+            <Obj N="Value" RefId="9">
+              <TNRef RefId="2" />
+              <LST />
+            </Obj>
+          </En>
+          <En>
+            <S N="Key">Cmdlet</S>
+            <Obj N="Value" RefId="10">
+              <TNRef RefId="2" />
+              <LST />
+            </Obj>
+          </En>
+        </DCT>
+      </Obj>
+      <Nil N="PowerShellGetFormatVersion" />
+      <S N="ReleaseNotes">## 4.34.0 (2026-08-23)_x000D__x000A__x000D__x000A_* New DNS Plugins_x000D__x000A_  * [Spaceship](https://www.spaceship.com/) (#678)_x000D__x000A_  * [GoDaddyV3](https://www.godaddy.com) for use with new V3 API (#686)_x000D__x000A_  * [MijnHost](https://mijn.host) (#675) (Thanks @j81blog)_x000D__x000A_  * [InfomaniakV2](https://www.infomaniak.com) (#689) (Thanks @Sundypha)_x000D__x000A_  * [HostingNL](https://www.hosting.nl/) (684) (Thanks @Tim81)_x000D__x000A_* Fixed Gandi API endpoint URL which recently changed. It is now a configurable parameter as well. (#682)_x000D__x000A_* Fixed Regru compatibility with API 2 (#687) (Thanks @kropachev)_x000D__x000A_* Fixed a number of GCloud issues:_x000D__x000A_  * Now works against accounts with many zones (#688)_x000D__x000A_  * Fixed future dns-persist-01 support_x000D__x000A_  * GCProjectId may now be a comma-delimited string instead of a string array_x000D__x000A_  * Better error handling</S>
+      <Obj N="Dependencies" RefId="11">
+        <TNRef RefId="2" />
+        <LST />
+      </Obj>
+      <S N="RepositorySourceLocation">https://www.powershellgallery.com/api/v2</S>
+      <S N="Repository">PSGallery</S>
+      <S N="PackageManagementProvider">NuGet</S>
+      <Obj N="AdditionalMetadata" RefId="12">
+        <TN RefId="4">
+          <T>System.Management.Automation.PSCustomObject</T>
+          <T>System.Object</T>
+        </TN>
+        <MS>
+          <S N="copyright">(c) 2018 Ryan Bolger. All rights reserved.</S>
+          <S N="description">ACME protocol client for obtaining certificates using Let's Encrypt (or other ACME compliant CA)</S>
+          <S N="requireLicenseAcceptance">False</S>
+          <S N="releaseNotes">## 4.34.0 (2026-08-23)_x000D__x000A__x000D__x000A_* New DNS Plugins_x000D__x000A_  * [Spaceship](https://www.spaceship.com/) (#678)_x000D__x000A_  * [GoDaddyV3](https://www.godaddy.com) for use with new V3 API (#686)_x000D__x000A_  * [MijnHost](https://mijn.host) (#675) (Thanks @j81blog)_x000D__x000A_  * [InfomaniakV2](https://www.infomaniak.com) (#689) (Thanks @Sundypha)_x000D__x000A_  * [HostingNL](https://www.hosting.nl/) (684) (Thanks @Tim81)_x000D__x000A_* Fixed Gandi API endpoint URL which recently changed. It is now a configurable parameter as well. (#682)_x000D__x000A_* Fixed Regru compatibility with API 2 (#687) (Thanks @kropachev)_x000D__x000A_* Fixed a number of GCloud issues:_x000D__x000A_  * Now works against accounts with many zones (#688)_x000D__x000A_  * Fixed future dns-persist-01 support_x000D__x000A_  * GCProjectId may now be a comma-delimited string instead of a string array_x000D__x000A_  * Better error handling</S>
+          <S N="isLatestVersion">True</S>
+          <S N="isAbsoluteLatestVersion">True</S>
+          <S N="versionDownloadCount">21757</S>
+          <S N="downloadCount">3436205</S>
+          <S N="packageSize">1983517</S>
+          <S N="published">8/23/2026 3:50:05 PM +02:00</S>
+          <S N="created">8/23/2026 3:50:05 PM +02:00</S>
+          <S N="lastUpdated">9/11/2026 2:22:06 PM +02:00</S>
+          <S N="tags">LetsEncrypt ssl tls certificates acme Linux Mac PSModule PSEdition_Desktop PSEdition_Core PSFunction_Complete-PAOrder PSCommand_Complete-PAOrder PSFunction_Export-PAAccountKey PSCommand_Export-PAAccountKey PSFunction_Get-DnsAcctLabel PSCommand_Get-DnsAcctLabel PSFunction_Get-KeyAuthorization PSCommand_Get-KeyAuthorization PSFunction_Get-PAAccount PSCommand_Get-PAAccount PSFunction_Get-PAAuthorization PSCommand_Get-PAAuthorization PSFunction_Get-PACertificate PSCommand_Get-PACertificate PSFunction_Get-PAOrder PSCommand_Get-PAOrder PSFunction_Get-PAPlugin PSCommand_Get-PAPlugin PSFunction_Get-PAPluginArgs PSCommand_Get-PAPluginArgs PSFunction_Get-PAProfile PSCommand_Get-PAProfile PSFunction_Get-PAServer PSCommand_Get-PAServer PSFunction_Install-PACertificate PSCommand_Install-PACertificate PSFunction_Invoke-HttpChallengeListener PSCommand_Invoke-HttpChallengeListener PSFunction_New-PAAccount PSCommand_New-PAAccount PSFunction_New-PACertificate PSCommand_New-PACertificate PSFunction_New-PAOrder PSCommand_New-PAOrder PSFunction_New-PAAuthorization PSCommand_New-PAAuthorization PSFunction_Publish-Challenge PSCommand_Publish-Challenge PSFunction_Publish-DnsPersistChallenge PSCommand_Publish-DnsPersistChallenge PSFunction_Remove-PAAccount PSCommand_Remove-PAAccount PSFunction_Remove-PAOrder PSCommand_Remove-PAOrder PSFunction_Remove-PAServer PSCommand_Remove-PAServer PSFunction_Revoke-PAAuthorization PSCommand_Revoke-PAAuthorization PSFunction_Revoke-PACertificate PSCommand_Revoke-PACertificate PSFunction_Save-Challenge PSCommand_Save-Challenge PSFunction_Send-ChallengeAck PSCommand_Send-ChallengeAck PSFunction_Set-PAAccount PSCommand_Set-PAAccount PSFunction_Set-PAOrder PSCommand_Set-PAOrder PSFunction_Set-PAServer PSCommand_Set-PAServer PSFunction_Submit-ChallengeValidation PSCommand_Submit-ChallengeValidation PSFunction_Submit-OrderFinalize PSCommand_Submit-OrderFinalize PSFunction_Submit-Renewal PSCommand_Submit-Renewal PSFunction_Unpublish-Challenge PSCommand_Unpublish-Challenge PSFunction_Unpublish-DnsPersistChallenge PSCommand_Unpublish-DnsPersistChallenge PSIncludes_Function</S>
+          <S N="developmentDependency">False</S>
+          <S N="updated">2026-09-11T14:22:06Z</S>
+          <S N="NormalizedVersion">4.34.0</S>
+          <S N="Authors">Ryan Bolger</S>
+          <S N="IsPrerelease">false</S>
+          <S N="ItemType">Module</S>
+          <S N="FileList">Posh-ACME.nuspec|Posh-ACME.Format.ps1xml|Posh-ACME.psd1|Posh-ACME.psm1|en-US\about_Posh-ACME.help.txt|en-US\Posh-ACME-help.xml|lib\BC.Crypto.1.8.8.2-netstandard2.0.dll|lib\BC.Crypto.1.8.8.2-netstandard2.0.xml|lib\license.txt|Plugins\AcmeDns.ps1|Plugins\Active24.ps1|Plugins\AddrTools.ps1|Plugins\Akamai.ps1|Plugins\Aliyun.ps1|Plugins\All-Inkl.ps1|Plugins\Aurora.ps1|Plugins\AutoDNS.ps1|Plugins\Azure.ps1|Plugins\Beget.ps1|Plugins\BlueCat.ps1|Plugins\Bunny.ps1|Plugins\Cloudflare.ps1|Plugins\ClouDNS.ps1|Plugins\Combell.ps1|Plugins\Constellix.ps1|Plugins\CoreNetworks.ps1|Plugins\DeSEC.ps1|Plugins\DMEasy.ps1|Plugins\DNSExit.ps1|Plugins\DNSimple.ps1|Plugins\DNSPod.ps1|Plugins\DOcean.ps1|Plugins\DomainOffensive.ps1|Plugins\Domeneshop.ps1|Plugins\Dreamhost.ps1|Plugins\DuckDNS.ps1|Plugins\Dynu.ps1|Plugins\EasyDNS.ps1|Plugins\Easyname.ps1|Plugins\EuroDNSReseller.ps1|Plugins\FreeDNS.ps1|Plugins\Gandi.ps1|Plugins\GCloud.ps1|Plugins\GoDaddy.ps1|Plugins\GoDaddyV3.ps1|Plugins\GoogleDomains.ps1|Plugins\Hetzner.ps1|Plugins\HetznerCloud.ps1|Plugins\HostingDe.ps1|Plugins\HostingNL.ps1|Plugins\HostUp.ps1|Plugins\HurricaneElectric.ps1|Plugins\HurricaneElectricDyn.ps1|Plugins\IBMSoftLayer.ps1|Plugins\Infoblox.ps1|Plugins\Infomaniak.ps1|Plugins\InfomaniakV2.ps1|Plugins\INWX.ps1|Plugins\IONOS.ps1|Plugins\ISPConfig.ps1|Plugins\LeaseWeb.ps1|Plugins\Linode.ps1|Plugins\Loopia.ps1|Plugins\LuaDns.ps1|Plugins\Manual.ps1|Plugins\MijnHost.ps1|Plugins\Namecheap.ps1|Plugins\NameCom.ps1|Plugins\NameSilo.ps1|Plugins\Netcup.ps1|Plugins\NS1.ps1|Plugins\OnlineNet.ps1|Plugins\OVH.ps1|Plugins\PointDNS.ps1|Plugins\Porkbun.ps1|Plugins\PortsManagement.ps1|Plugins\PowerDNS.ps1|Plugins\Rackspace.ps1|Plugins\Regru.ps1|Plugins\RFC2136.ps1|Plugins\Route53.ps1|Plugins\Selectel.ps1|Plugins\SimpleDNSPlus.ps1|Plugins\Simply.ps1|Plugins\SimplyCom.ps1|Plugins\SOLIDServer.ps1|Plugins\Spaceship.ps1|Plugins\SSHProxy.ps1|Plugins\Technitium.ps1|Plugins\TencentDNS.ps1|Plugins\TotalUptime.ps1|Plugins\TransIP.ps1|Plugins\UKFast.ps1|Plugins\WebRoot.ps1|Plugins\WebSelfHost.ps1|Plugins\WebsupportSK.ps1|Plugins\WEDOS.ps1|Plugins\Windows.ps1|Plugins\Yandex.ps1|Plugins\Zilore.ps1|Plugins\ZoneEdit.ps1|Plugins\Zonomi.ps1|Plugins\_Example-DNS.ps1|Plugins\_Example-HTTP.ps1|Private\AcmeException.ps1|Private\ConvertFrom-Base64Url.ps1|Private\ConvertFrom-BCKey.ps1|Private\ConvertFrom-Jwk.ps1|Private\ConvertTo-Base64Url.ps1|Private\ConvertTo-Jwk.ps1|Private\ConvertTo-PAAuthorization.ps1|Private\Export-CertPfx.ps1|Private\Export-PACertFiles.ps1|Private\Export-Pem.ps1|Private\Export-PluginArgs.ps1|Private\Export-PluginVar.ps1|Private\Get-AlternateLinks.ps1|Private\Get-ChainIssuers.ps1|Private\Get-CsrDetails.ps1|Private\Get-EncryptionParam.ps1|Private\Get-Nonce.ps1|Private\Import-PAConfig.ps1|Private\Import-Pem.ps1|Private\Import-PfxCertInternal.ps1|Private\Import-PluginDetail.ps1|Private\Import-PluginVar.ps1|Private\Import-WindowsChain.ps1|Private\InitTLS.ps1|Private\Invoke-ACME.ps1|Private\MockWrappers.ps1|Private\New-AesKey.ps1|Private\New-Csr.ps1|Private\New-Jws.ps1|Private\New-PAKey.ps1|Private\Register-ArgCompleters.ps1|Private\Repair-ISODate.ps1|Private\Set-AltPluginEncryption.ps1|Private\Split-PemChain.ps1|Private\Start-SleepProgress.ps1|Private\Test-SecureStringNotNullOrEmpty.ps1|Private\Test-ValidDirUrl.ps1|Private\Test-ValidFriendlyName.ps1|Private\Test-ValidKey.ps1|Private\Test-ValidKeyLength.ps1|Private\Test-ValidPlugin.ps1|Private\Test-WinOnly.ps1|Private\Update-PAAccount.ps1|Private\Update-PAOrder.ps1|Private\Wait-AuthValidation.ps1|Public\Complete-PAOrder.ps1|Public\Export-PAAccountKey.ps1|Public\Get-DnsAcctLabel.ps1|Public\Get-KeyAuthorization.ps1|Public\Get-PAAccount.ps1|Public\Get-PAAuthorization.ps1|Public\Get-PACertificate.ps1|Public\Get-PAOrder.ps1|Public\Get-PAPlugin.ps1|Public\Get-PAPluginArgs.ps1|Public\Get-PAProfile.ps1|Public\Get-PAServer.ps1|Public\Install-PACertificate.ps1|Public\Invoke-HttpChallengeListener.ps1|Public\New-PAAccount.ps1|Public\New-PAAuthorization.ps1|Public\New-PACertificate.ps1|Public\New-PAOrder.ps1|Public\Publish-Challenge.ps1|Public\Publish-DnsPersistChallenge.ps1|Public\Remove-PAAccount.ps1|Public\Remove-PAOrder.ps1|Public\Remove-PAServer.ps1|Public\Revoke-PAAuthorization.ps1|Public\Revoke-PACertificate.ps1|Public\Save-Challenge.ps1|Public\Send-ChallengeAck.ps1|Public\Set-PAAccount.ps1|Public\Set-PAOrder.ps1|Public\Set-PAServer.ps1|Public\Submit-ChallengeValidation.ps1|Public\Submit-OrderFinalize.ps1|Public\Submit-Renewal.ps1|Public\Unpublish-Challenge.ps1|Public\Unpublish-DnsPersistChallenge.ps1</S>
+          <S N="GUID">5f52d490-68dd-411c-8252-828c199a4e63</S>
+          <S N="PowerShellVersion">5.1</S>
+          <S N="DotNetFrameworkVersion">4.7.1</S>
+        </MS>
+      </Obj>
+      <S N="InstalledLocation">C:\Users\Administrator\Documents\WindowsPowerShell\Modules\Posh-ACME\4.34.0</S>
+    </MS>
+  </Obj>
+</Objs>

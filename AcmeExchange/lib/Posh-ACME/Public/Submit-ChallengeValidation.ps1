@@ -1,0 +1,247 @@
+function Submit-ChallengeValidation {
+    [CmdletBinding()]
+    param(
+        [Parameter(ValueFromPipeline)]
+        [PSTypeName('PoshACME.PAOrder')]$Order
+    )
+
+    # Here's the overview of this function's purpose:
+    # - publish challenges for any pending authorizations in the Order
+    # - notify ACME server to validate those challenges
+    # - wait until the validations are complete (good or bad)
+    # - unpublish the challenges that were published
+    # - return the updated order if successful, otherwise throw
+
+    Begin {
+        try {
+            # make sure an account exists
+            if (-not ($acct = Get-PAAccount)) {
+                throw "No ACME account configured. Run Set-PAAccount or New-PAAccount first."
+            }
+            # make sure it's valid
+            if ($acct.status -ne 'valid') {
+                throw "Account status is $($acct.status)."
+            }
+        }
+        catch { $PSCmdlet.ThrowTerminatingError($_) }
+    }
+
+    Process {
+
+        # make sure any order passed in is actually associated with the account
+        # or if no order was specified, that there's a current order.
+        if (-not $Order) {
+            if (-not ($Order = Get-PAOrder)) {
+                try { throw "No Order parameter specified and no current order selected. Try running Set-PAOrder first." }
+                catch { $PSCmdlet.ThrowTerminatingError($_) }
+            }
+        } elseif ($Order.Name -notin (Get-PAOrder -List).Name) {
+            Write-Error "Order '$($Order.Name)' was not found in the current account's order list."
+            return
+        }
+
+        # make sure the order has a valid state for this function
+        if ($Order.status -eq 'invalid') {
+            Write-Error "Order '$($Order.Name)' status is invalid. Unable to continue."
+            return
+        }
+        elseif ($Order.status -in 'valid','processing') {
+            Write-Warning "The server has already issued or is processing a certificate for order '$($Order.Name)'."
+            return
+        }
+        elseif ($Order.status -eq 'ready') {
+            Write-Warning "Order '$($Order.Name)' has already completed challenge validation and is awaiting finalization."
+            return
+        }
+
+
+        # The only order status left is 'pending'. This means that at least one
+        # authorization hasn't been validated yet according to
+        # https://tools.ietf.org/html/rfc8555#section-7.1.6
+        # So we're going to check all of the authorization statuses and publish
+        # records for any that are still pending.
+
+        $allAuths = @($Order | Get-PAAuthorization)
+        $published = @()
+
+        # fill out the order's Plugin attribute so there's a value for each authorization
+        if (-not $Order.Plugin) {
+            Write-Warning "No plugin found associated with order. Defaulting to Manual."
+            $Order.Plugin = @('Manual') * $allAuths.Count
+        } elseif ($Order.Plugin.Count -lt $allAuths.Count) {
+            $lastPlugin = $Order.Plugin[-1]
+            Write-Warning "Fewer Plugin values than names in the order. Using $lastPlugin for the rest."
+            $Order.Plugin += @($lastPlugin) * ($allAuths.Count-$Order.Plugin.Count)
+        }
+        Write-Debug "Plugin: $($Order.Plugin -join ',')"
+
+        # fill out the order's DnsAlias attribute so there's a value for each authorization
+        if (-not $Order.DnsAlias) {
+            # no alias means they should all just be empty
+            $Order.DnsAlias = @('') * $allAuths.Count
+        } elseif ($Order.DnsAlias.Count -lt $allAuths.Count) {
+            $lastAlias = $Order.DnsAlias[-1]
+            Write-Warning "Fewer DnsAlias values than names in the order. Using $lastAlias for the rest."
+            $Order.DnsAlias += @($lastAlias) * ($allAuths.Count-$Order.DnsAlias.Count)
+        }
+        Write-Debug "DnsAlias: $($Order.DnsAlias -join ',')"
+
+        # import existing args
+        $PluginArgs = Get-PAPluginArgs -Name $Order.Name
+
+        # loop through the authorizations looking for challenges to validate
+        for ($i=0; $i -lt $allAuths.Count; $i++) {
+
+            $auth = $allAuths[$i]
+            if ($auth.status -eq 'pending') {
+
+                # Determine which challenge to publish based on the plugin type and check
+                # for any alternate DNS challenge preference specified in the order
+                $chalType = $script:Plugins.($Order.Plugin[$i]).ChallengeType
+                if ($chalType -eq 'dns-01' -and $Order.DnsVariant -and $Order.DnsVariant -ne 'dns-01') {
+                    $chalType = $Order.DnsVariant
+                    Write-Verbose "Using alternate DNS challenge type '$chalType' for $($auth.fqdn) based on order preference."
+                }
+                $challenge = $auth.challenges | Where-Object { $_.type -eq $chalType }
+                if (-not $challenge) {
+                    try {
+                        throw "$($auth.fqdn) authorization contains no challenges that match $chalType"
+                    } catch { $PSCmdlet.ThrowTerminatingError($_) }
+                }
+
+                if ($Order.UseSerialValidation) {
+                    # Publish and validate each challenge separately
+                    $pubParams = @{
+                        Domain = $auth.DNSId
+                        Account = $acct
+                        Token = $challenge.token
+                        Plugin = $Order.Plugin[$i]
+                        PluginArgs = $PluginArgs
+                        DnsAlias = $Order.DnsAlias[$i]
+                    }
+                    if ($Order.DnsVariant) { $pubParams.DnsVariant = $Order.DnsVariant }
+                    try {
+                        Publish-Challenge @pubParams
+                        Save-Challenge -Plugin $Order.Plugin[$i] -PluginArgs $PluginArgs
+
+                        # sleep while DNS changes propagate if it was a DNS challenge that was published
+                        if ($Order.DnsSleep -gt 0 -and $chalType -like 'dns-*') {
+                            Write-Verbose "Sleeping for $($Order.DnsSleep) seconds while DNS change(s) propagate"
+                            Start-SleepProgress $Order.DnsSleep -Activity "Waiting for DNS to propagate"
+                        }
+
+                        # ask the server to validate the challenge
+                        Write-Verbose "Requesting challenge validation"
+                        $challenge.url | Send-ChallengeAck -Account $acct
+
+                        # and wait for it to succeed or fail
+                        Wait-AuthValidation $auth.location $Order.ValidationTimeout
+                    }
+                    catch {
+                        $PSCmdlet.ThrowTerminatingError($_)
+                    }
+                    finally {
+                        Unpublish-Challenge @pubParams
+                        Save-Challenge -Plugin $Order.Plugin[$i] -PluginArgs $PluginArgs
+                    }
+                }
+                else {
+                    try {
+                        # Publish each challenge
+                        $pubParams = @{
+                            Domain = $auth.DNSId
+                            Account = $acct
+                            Token = $challenge.token
+                            Plugin = $Order.Plugin[$i]
+                            PluginArgs = $PluginArgs
+                            DnsAlias = $Order.DnsAlias[$i]
+                        }
+                        if ($Order.DnsVariant) { $pubParams.DnsVariant = $Order.DnsVariant }
+                        Publish-Challenge @pubParams
+
+                        # save the details of what we published for validation and cleanup later
+                        $published += @{
+                            identifier = $auth.DNSId
+                            fqdn = $auth.fqdn
+                            authUrl = $auth.location
+                            plugin = $Order.Plugin[$i]
+                            chalType = $chalType
+                            chalToken = $challenge.token
+                            chalUrl = $challenge.url
+                            DnsAlias = $Order.DnsAlias[$i]
+                            DnsVariant = $Order.DnsVariant
+                        }
+                    }
+                    catch {
+                        $PSCmdlet.ThrowTerminatingError($_)
+                    }
+                }
+
+            } elseif ($auth.status -eq 'valid') {
+                # skip ones that are already valid
+                Write-Verbose "$($auth.fqdn) authorization is already valid"
+                continue
+            } else {
+                #status invalid, revoked, deactivated, or expired
+                try {
+                    throw "$($auth.fqdn) authorization status is '$($auth.status)'. Create a new order and try again."
+                } catch { $PSCmdlet.ThrowTerminatingError($_) }
+            }
+        }
+
+        if (-not $Order.UseSerialValidation) {
+            try {
+                # if we published any records, now we need to save them, wait for DNS
+                # to propagate, and notify the server it can perform the validation
+                if ($published.Count -gt 0) {
+
+                    # grab the set of unique plugins that were used to publish challenges
+                    $uniquePluginsUsed = $published.plugin | Sort-Object -Unique
+
+                    # call the Save function for each plugin used
+                    $uniquePluginsUsed | ForEach-Object {
+                        Save-Challenge -Plugin $_ -PluginArgs $PluginArgs
+                    }
+
+                    # sleep while DNS changes propagate if there were DNS challenges published
+                    $uniqueChalTypes = $script:Plugins[$uniquePluginsUsed].ChallengeType
+                    if ($Order.DnsSleep -gt 0 -and 'dns-01' -in $uniqueChalTypes) {
+                        Write-Verbose "Sleeping for $($Order.DnsSleep) seconds while DNS change(s) propagate"
+                        Start-SleepProgress $Order.DnsSleep -Activity "Waiting for DNS to propagate"
+                    }
+
+                    # ask the server to validate the challenges
+                    Write-Verbose "Requesting challenge validations"
+                    $published.chalUrl | Send-ChallengeAck -Account $acct
+
+                    # and wait for them to succeed or fail
+                    Wait-AuthValidation @($published.authUrl) $Order.ValidationTimeout
+                }
+            }
+            catch {
+                $PSCmdlet.ThrowTerminatingError($_)
+            }
+            finally {
+                # always cleanup the challenges that were published
+                $published | ForEach-Object {
+                    $pubParams = @{
+                        Domain = $_.identifier
+                        Account = $acct
+                        Token = $_.chalToken
+                        Plugin = $_.plugin
+                        PluginArgs = $PluginArgs
+                        DnsAlias = $_.DnsAlias
+                    }
+                    if ($_.DnsVariant) { $pubParams.DnsVariant = $_.DnsVariant }
+                    Unpublish-Challenge @pubParams
+                }
+
+                # save the cleanup changes
+                $published.plugin | Sort-Object -Unique | ForEach-Object {
+                    Save-Challenge -Plugin $_ -PluginArgs $PluginArgs
+                }
+            }
+        }
+
+    }
+}

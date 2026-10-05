@@ -1,0 +1,134 @@
+name: Release
+
+# Ein Release je Werkzeug. Tag-Format: <Werkzeug>/v<Version>, z. B. MailContactEditor/v1.0.0
+# Das Werkzeug muss eine release.psd1 haben (Hauptskript, Build-Skript, Artefakte).
+on:
+  push:
+    tags:
+      - '*/v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag zum Nachbauen, z. B. LogViewer/v3.0.1'
+        required: true
+
+permissions:
+  contents: write      # für das Anlegen des Release
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag zerlegen
+        id: tag
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ref = if ('${{ github.event_name }}' -eq 'workflow_dispatch') { '${{ github.event.inputs.tag }}' }
+                 else { '${{ github.ref_name }}' }
+          if ($ref -notmatch '^(?<tool>[^/]+)/v(?<ver>\d+\.\d+\.\d+)$') {
+            throw "Tag '$ref' passt nicht auf <Werkzeug>/v<Version>, z. B. LogViewer/v3.0.1"
+          }
+          $tool = $Matches['tool']; $ver = $Matches['ver']
+          if (-not (Test-Path $tool -PathType Container)) { throw "Ordner '$tool' gibt es nicht." }
+          if (-not (Test-Path "$tool/release.psd1"))      { throw "'$tool/release.psd1' fehlt - ohne sie ist nicht definiert, was ins Release gehört." }
+          "tool=$tool" | Out-File $env:GITHUB_OUTPUT -Append
+          "ver=$ver"   | Out-File $env:GITHUB_OUTPUT -Append
+          Write-Host "Werkzeug: $tool, Version: $ver"
+
+      - name: Version gegen das Skript prüfen
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tool = '${{ steps.tag.outputs.tool }}'
+          $meta = Import-PowerShellDataFile "$tool/release.psd1"
+          . ./build/Get-ToolVersion.ps1
+          # Schlaegt fehl, wenn Tag-Version und $script:Version auseinanderlaufen.
+          $null = Assert-ToolVersion -Path "$tool/$($meta.Main)" -Expected '${{ steps.tag.outputs.ver }}'
+
+      - name: ps2exe bereitstellen
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Ohne Trusted fragt Install-Module nach - in einem Runner ohne Eingabe ein Abbruch.
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module ps2exe -Force -Scope CurrentUser -AllowClobber -SkipPublisherCheck
+          Write-Host ("ps2exe {0}" -f (Get-Module -ListAvailable ps2exe | Select-Object -First 1).Version)
+
+      - name: Bauen
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tool = '${{ steps.tag.outputs.tool }}'
+          $meta = Import-PowerShellDataFile "$tool/release.psd1"
+          if ($meta.Build) {
+            & "./$tool/$($meta.Build)" -Root (Resolve-Path $tool).Path
+          } else {
+            Write-Host 'Kein Build-Skript hinterlegt - es werden nur die Quelldateien ausgeliefert.'
+          }
+
+      - name: Artefakte einsammeln
+        id: assets
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tool = '${{ steps.tag.outputs.tool }}'
+          $ver  = '${{ steps.tag.outputs.ver }}'
+          $meta = Import-PowerShellDataFile "$tool/release.psd1"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+
+          foreach ($a in @($meta.Artifacts)) {
+            $p = Join-Path $tool $a
+            if (-not (Test-Path $p)) { throw "Artefakt fehlt nach dem Build: $p" }
+            Copy-Item $p dist/
+          }
+
+          if ($meta.Bundle) {
+            # Build-Skripte und Release-Metadaten gehören nicht ins Auslieferungs-ZIP.
+            $stage = Join-Path $env:RUNNER_TEMP "bundle/$tool"
+            if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+            New-Item -ItemType Directory -Force -Path $stage | Out-Null
+            Copy-Item "$tool/*" $stage -Recurse -Force
+            # -Include greift nur mit Wildcard im Pfad; ohne ihn bliebe die Liste leer.
+            # -Force, damit auch versteckte Dateien wie .gitignore erfasst werden.
+            Get-ChildItem "$stage\*" -Include 'release.psd1', 'build-exe.ps1', 'Build-*.ps1', '.gitignore' -Recurse -Force |
+              Remove-Item -Force
+            Compress-Archive -Path "$stage/*" -DestinationPath "dist/$tool-$ver.zip" -Force
+          }
+
+          $files = Get-ChildItem dist -File
+          if (-not $files) { throw 'Keine Release-Artefakte erzeugt - das Release wäre leer.' }
+          $files | ForEach-Object { Write-Host ("  {0} ({1:N1} KB)" -f $_.Name, ($_.Length/1KB)) }
+
+      - name: Release anlegen
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tool = '${{ steps.tag.outputs.tool }}'
+          $ver  = '${{ steps.tag.outputs.ver }}'
+          $meta = Import-PowerShellDataFile "$tool/release.psd1"
+
+          $notes = @(
+            "Werkzeug ``$tool`` Version $ver aus dem Sammelrepo."
+            ''
+            $meta.Notes
+            ''
+            '---'
+            'Die EXE ist **nicht signiert**: Windows SmartScreen meldet sich beim ersten Start'
+            '(Weitere Informationen -> Trotzdem ausführen), und manche Virenscanner stufen mit'
+            'ps2exe erzeugte Dateien als verdächtig ein. Wer das vermeiden will, nimmt das'
+            'PowerShell-Skript aus dem Quellordner statt der EXE.'
+          ) -join "`n"
+
+          # Mehrzeilige Notizen über eine Datei: als Argument würden Zeilenumbrüche
+          # beim Übergang an die native gh.exe verlorengehen.
+          $notesFile = Join-Path $env:RUNNER_TEMP 'notes.md'
+          [IO.File]::WriteAllText($notesFile, $notes, (New-Object Text.UTF8Encoding $false))
+
+          $assets = (Get-ChildItem dist -File).FullName
+          gh release create "$tool/v$ver" @assets --title "$tool $ver" --notes-file $notesFile
+          if ($LASTEXITCODE -ne 0) { throw "gh release create ist fehlgeschlagen (Exit $LASTEXITCODE)." }

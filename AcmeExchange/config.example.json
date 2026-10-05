@@ -1,0 +1,49 @@
+{
+  "Version": 1,
+  "Acme": {
+    "Server": "LE_PROD",
+    "Domains": [ "*.example.com", "example.com" ],
+    "Contact": "hostmaster@example.com",
+    "KeyLength": "2048"
+  },
+  "Azure": {
+    "TenantId": "00000000-0000-0000-0000-000000000000",
+    "SubscriptionId": "00000000-0000-0000-0000-000000000000",
+    "AppId": "00000000-0000-0000-0000-000000000000",
+    "AppObjectId": "00000000-0000-0000-0000-000000000000",
+    "SpObjectId": "00000000-0000-0000-0000-000000000000",
+    "AppDisplayName": "ACME-DNS-example.com",
+    "AuthCertThumbprint": "0000000000000000000000000000000000000000",
+    "DnsZoneIds": [
+      "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/DNS/providers/Microsoft.Network/dnszones/example.com"
+    ],
+    "RoleName": "DNS TXT Contributor",
+    "BootstrapClientId": "1950a258-227b-4e31-a9cf-717495945fc2"
+  },
+  "Exchange": {
+    "Servers": [ "EX01", "EX02" ],
+    "Services": "IIS,SMTP",
+    "PrivateKeyExportable": true,
+    "UpdateConnectors": true,
+    "RemoveOldCertificate": true,
+    "LoopbackBinding": true,
+    "RestartTransportIfStale": true
+  },
+  "Notify": {
+    "SmtpServer": "localhost",
+    "Port": 25,
+    "UseSsl": false,
+    "From": "acme@example.com",
+    "To": [ "ops@example.com" ],
+    "WarnDaysBeforeExpiry": 14,
+    "SendSuccessMail": true
+  },
+  "Paths": {
+    "Home": "C:\\Tools\\AcmeExchange",
+    "BackupKeep": 3
+  },
+  "Task": {
+    "Name": "ACME Exchange Certificate Renewal",
+    "Time": "03:00"
+  }
+}

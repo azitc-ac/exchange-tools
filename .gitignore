@@ -1,0 +1,16 @@
+# Windows/PowerShell
+Thumbs.db
+desktop.ini
+*.bak
+*~
+
+# Build-Zwischenstände
+*.pdb
+
+# lokale Konfiguration mit Umgebungsbezug
+config.json
+
+# Release-Artefakte: werden vom Workflow gebaut und als Release-Asset angehängt,
+# nicht versioniert. Siehe .github/workflows/release.yml
+*.exe
+dist/
