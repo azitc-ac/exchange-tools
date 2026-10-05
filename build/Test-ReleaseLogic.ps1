@@ -92,6 +92,22 @@ $files = Get-ChildItem dist -File
 if ($files) { $pass++; Write-Output "  OK   dist enthält: $(($files.Name) -join ', ')" }
 else { $fail++; Write-Output '  FEHL dist ist leer' }
 
+# Die Übergabe der Assets an gh - hier ist der erste Release-Lauf gescheitert.
+# Bei genau EINER Datei liefert .FullName einen String, und @string splattet
+# zeichenweise: gh bekam 'D' statt 'D:\...\MailContactEditor.exe' und meldete
+# "no matches found for `D`". @(...) erzwingt das Array.
+$assets = @((Get-ChildItem dist -File).FullName)
+$sammler = { param([Parameter(ValueFromRemainingArguments)]$rest) $rest }
+$uebergeben = @(& $sammler @assets)
+if ($uebergeben.Count -eq $assets.Count -and $uebergeben[0] -eq $assets[0]) {
+    $pass++; Write-Output "  OK   Assets kommen als $($uebergeben.Count) vollständige(r) Pfad(e) an"
+}
+else {
+    $fail++
+    Write-Output ("  FEHL Assets zerfallen beim Splatting: {0} Argumente statt {1}, erstes = '{2}'" -f `
+                  $uebergeben.Count, $assets.Count, $uebergeben[0])
+}
+
 Write-Output "`n######## E. Bundle-Zweig (AcmeExchange, ZIP) ########"
 $tool = 'AcmeExchange'
 $meta = Import-PowerShellDataFile "$tool/release.psd1"

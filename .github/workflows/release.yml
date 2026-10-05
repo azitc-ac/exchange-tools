@@ -129,6 +129,8 @@ jobs:
           $notesFile = Join-Path $env:RUNNER_TEMP 'notes.md'
           [IO.File]::WriteAllText($notesFile, $notes, (New-Object Text.UTF8Encoding $false))
 
-          $assets = (Get-ChildItem dist -File).FullName
+          # @(...) ist Pflicht: bei genau EINER Datei liefert .FullName einen String,
+          # und @string splattet zeichenweise - gh bekäme dann 'D' statt 'D:\...\x.exe'.
+          $assets = @((Get-ChildItem dist -File).FullName)
           gh release create "$tool/v$ver" @assets --title "$tool $ver" --notes-file $notesFile
           if ($LASTEXITCODE -ne 0) { throw "gh release create ist fehlgeschlagen (Exit $LASTEXITCODE)." }
