@@ -17,6 +17,10 @@
         @{ Tool = 'MailContactEditor'; Main = 'Edit-MailContactAddresses.ps1';          Prolog = 'exo' }
         @{ Tool = 'ExchangeQueueViewer'; Main = 'Exchange Queue Viewer replacement.ps1'; Prolog = 'onprem' }
         @{ Tool = 'ImportExchangePfx'; Main = 'import-ExchangePFX.ps1';                  Prolog = 'onprem' }
+        @{ Tool = 'DeliveryDiagnostics'; Main = 'Get-SmtpCertificate.ps1';               Prolog = 'onprem' }
+        @{ Tool = 'DeliveryDiagnostics'; Main = 'Save-DeliveryEvidence.ps1';             Prolog = 'onprem' }
+        @{ Tool = 'DeliveryDiagnostics'; Main = 'Test-MailboxDelivery.ps1';              Prolog = 'onprem' }
+        @{ Tool = 'ExchangeCertFix'; Main = 'Remove-SupersededExchangeCertificate.ps1';  Prolog = 'onprem' }
     )
 
     # Werkzeuge gegen Exchange Online mit eigener Verbindungslogik: nur die
@@ -31,12 +35,8 @@
     # steht - und ebenso, wenn ein Eintrag überflüssig geworden ist, aber stehenblieb.
     # Jede Zeile nennt den Grund, nicht nur die Datei.
     KnownGaps = @(
-        @{ Datei = 'AcmeExchangeSetup.ps1';                   Grund = 'eigene Snap-in-Logik im Bundle; Umstellung zusammen mit der Engine' }
-        @{ Datei = 'Invoke-AcmeExchangeCert.ps1';             Grund = 'Engine des Bundles, laedt das Snap-in selbst und protokolliert eigenstaendig' }
-        @{ Datei = 'Get-SmtpCertificate.ps1';                 Grund = 'DeliveryDiagnostics, noch nicht umgestellt' }
-        @{ Datei = 'Save-DeliveryEvidence.ps1';               Grund = 'DeliveryDiagnostics, noch nicht umgestellt' }
-        @{ Datei = 'Test-MailboxDelivery.ps1';                Grund = 'DeliveryDiagnostics, noch nicht umgestellt' }
-        @{ Datei = 'Remove-SupersededExchangeCertificate.ps1'; Grund = 'ExchangeCertFix, noch nicht umgestellt' }
-        @{ Datei = 'ExchangeTester.ps1';                      Grund = 'laeuft bewusst auch ohne Exchange auf einem Arbeitsplatz; Verbindung ist dort optional' }
+        @{ Datei = 'AcmeExchangeSetup.ps1';       Grund = 'GUI des Bundles: laedt das Snap-in erst beim Ausfuehren einer Aktion, nicht beim Start - ein Prolog wuerde die Oberflaeche auf Rechnern ohne Exchange gar nicht erst oeffnen' }
+        @{ Datei = 'Invoke-AcmeExchangeCert.ps1'; Grund = 'Engine des Bundles mit eigener Protokollierung; laeuft auch in Teilen ohne Exchange (reine PFX-Ausstellung)' }
+        @{ Datei = 'ExchangeTester.ps1';          Grund = 'laeuft bewusst auf einem Arbeitsplatz ohne Exchange - er nimmt die Sicht des Clients ein; die Verbindung ist dort optional' }
     )
 }
