@@ -33,7 +33,7 @@ jobs:
           }
           $tool = $Matches['tool']; $ver = $Matches['ver']
           if (-not (Test-Path $tool -PathType Container)) { throw "Ordner '$tool' gibt es nicht." }
-          if (-not (Test-Path "$tool/release.psd1"))      { throw "'$tool/release.psd1' fehlt - ohne sie ist nicht definiert, was ins Release gehört." }
+          if (-not (Test-Path "$tool/release.psd1"))      { throw "'$tool/release.psd1' fehlt - ohne sie ist nicht definiert, was ins Release gehoert." }
           "tool=$tool" | Out-File $env:GITHUB_OUTPUT -Append
           "ver=$ver"   | Out-File $env:GITHUB_OUTPUT -Append
           Write-Host "Werkzeug: $tool, Version: $ver"
@@ -86,7 +86,7 @@ jobs:
           }
 
           if ($meta.Bundle) {
-            # Build-Skripte und Release-Metadaten gehören nicht ins Auslieferungs-ZIP.
+            # Build-Skripte und Release-Metadaten gehoeren nicht ins Auslieferungs-ZIP.
             $stage = Join-Path $env:RUNNER_TEMP "bundle/$tool"
             if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
             New-Item -ItemType Directory -Force -Path $stage | Out-Null
@@ -99,7 +99,7 @@ jobs:
           }
 
           $files = Get-ChildItem dist -File
-          if (-not $files) { throw 'Keine Release-Artefakte erzeugt - das Release wäre leer.' }
+          if (-not $files) { throw 'Keine Release-Artefakte erzeugt - das Release waere leer.' }
           $files | ForEach-Object { Write-Host ("  {0} ({1:N1} KB)" -f $_.Name, ($_.Length/1KB)) }
 
       - name: Release anlegen
@@ -112,25 +112,28 @@ jobs:
           $ver  = '${{ steps.tag.outputs.ver }}'
           $meta = Import-PowerShellDataFile "$tool/release.psd1"
 
+          # Umlaute gehoeren NICHT in diesen Block: GitHub Actions legt ihn als .ps1
+          # ohne BOM ab, und Windows PowerShell 5.1 liest den dann in der ANSI-Codepage -
+          # aus "ausfuehren" wuerde "ausfÃ¼hren". Sichtbarer Text kommt deshalb aus
+          # Dateien, die hier ausdruecklich als UTF-8 gelesen werden.
+          $footer = [IO.File]::ReadAllText(
+            (Join-Path $PWD 'build\release-notes-footer.md'), [Text.Encoding]::UTF8)
+
           $notes = @(
             "Werkzeug ``$tool`` Version $ver aus dem Sammelrepo."
             ''
             $meta.Notes
             ''
-            '---'
-            'Die EXE ist **nicht signiert**: Windows SmartScreen meldet sich beim ersten Start'
-            '(Weitere Informationen -> Trotzdem ausführen), und manche Virenscanner stufen mit'
-            'ps2exe erzeugte Dateien als verdächtig ein. Wer das vermeiden will, nimmt das'
-            'PowerShell-Skript aus dem Quellordner statt der EXE.'
+            $footer.TrimEnd()
           ) -join "`n"
 
-          # Mehrzeilige Notizen über eine Datei: als Argument würden Zeilenumbrüche
-          # beim Übergang an die native gh.exe verlorengehen.
+          # Mehrzeilige Notizen ueber eine Datei: als Argument gingen Zeilenumbrueche
+          # beim Uebergang an die native gh.exe verloren.
           $notesFile = Join-Path $env:RUNNER_TEMP 'notes.md'
           [IO.File]::WriteAllText($notesFile, $notes, (New-Object Text.UTF8Encoding $false))
 
           # @(...) ist Pflicht: bei genau EINER Datei liefert .FullName einen String,
-          # und @string splattet zeichenweise - gh bekäme dann 'D' statt 'D:\...\x.exe'.
+          # und @string splattet zeichenweise - gh bekaeme dann 'D' statt 'D:\...\x.exe'.
           $assets = @((Get-ChildItem dist -File).FullName)
           gh release create "$tool/v$ver" @assets --title "$tool $ver" --notes-file $notesFile
           if ($LASTEXITCODE -ne 0) { throw "gh release create ist fehlgeschlagen (Exit $LASTEXITCODE)." }
