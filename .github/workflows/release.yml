@@ -1,7 +1,11 @@
 name: Release
 
 # Ein Release je Werkzeug. Tag-Format: <Werkzeug>/v<Version>, z. B. MailContactEditor/v1.0.0
-# Das Werkzeug muss eine release.psd1 haben (Hauptskript, Build-Skript, Artefakte).
+# Das Werkzeug muss eine release.psd1 haben (Hauptskript, Artefakte, Exe oder Bundle).
+#
+# ACHTUNG: Tags einzeln pushen. Bei mehr als drei Tags in einem Push erzeugt GitHub
+# für die überzähligen keine Push-Events - der Workflow läuft dann gar nicht an.
+# Nachholen über workflow_dispatch mit dem Tag als Eingabe.
 on:
   push:
     tags:

@@ -50,6 +50,11 @@ git tag MailContactEditor/v1.0.0
 git push origin MailContactEditor/v1.0.0
 ```
 
+**Tags einzeln pushen.** Wer mehr als drei Tags in einem `git push --tags` schickt,
+bekommt von GitHub für die überzähligen *keine* Push-Events – die Releases bleiben
+dann stillschweigend aus. Nachholen lässt sich das über *Actions → Release → Run
+workflow* mit dem Tag als Eingabe, oder per `gh workflow run Release -f tag=<Tag>`.
+
 `.github/workflows/release.yml` baut daraufhin die EXE mit ps2exe und hängt sie an. Welche
 Dateien ins Release gehören, steht in der `release.psd1` des Werkzeugs; ein Werkzeug ohne
 diese Datei bekommt kein Release. Die Versionsnummer steht an genau einer Stelle – als
