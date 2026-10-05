@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Schreibt den Prolog aus build/Prolog.*.ps1 in die Hauptskripte der Werkzeuge.
 
@@ -22,9 +22,18 @@
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [string]$Repo = (Split-Path $PSScriptRoot -Parent)
+    [string]$Repo
 )
 $ErrorActionPreference = 'Stop'
+
+# $PSScriptRoot kommt beim Start ueber -File in manchen Shells leer an; dann den
+# eigenen Pfad anders ermitteln, sonst scheitert schon die Parameterbindung.
+if (-not $Repo) {
+    $hier = if ($PSScriptRoot) { $PSScriptRoot }
+            elseif ($MyInvocation.MyCommand.Path) { Split-Path $MyInvocation.MyCommand.Path -Parent }
+            else { (Get-Location).Path }
+    $Repo = Split-Path $hier -Parent
+}
 
 function Get-PrologText([string]$Repo, [string]$Art) {
     $p = Join-Path $Repo ("build\Prolog.{0}.ps1" -f (Get-Culture).TextInfo.ToTitleCase($Art))

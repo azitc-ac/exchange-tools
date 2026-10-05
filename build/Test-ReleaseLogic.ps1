@@ -1,7 +1,15 @@
 ﻿# Spielt die PowerShell-Schritte aus .github/workflows/release.yml lokal nach -
 # alles ausser "gh release create". Zweck: die Logik prüfen, bevor ein Tag gesetzt wird.
 [CmdletBinding()]
-param([string]$Repo = (Split-Path $PSScriptRoot -Parent))
+param([string]$Repo)
+# $PSScriptRoot kommt beim Start ueber -File in manchen Shells leer an; dann den
+# eigenen Pfad anders ermitteln, sonst scheitert schon die Parameterbindung.
+if (-not $Repo) {
+    $hier = if ($PSScriptRoot) { $PSScriptRoot }
+            elseif ($MyInvocation.MyCommand.Path) { Split-Path $MyInvocation.MyCommand.Path -Parent }
+            else { (Get-Location).Path }
+    $Repo = Split-Path $hier -Parent
+}
 $ErrorActionPreference = 'Stop'
 Set-Location $Repo
 
@@ -9,8 +17,8 @@ $pass = 0; $fail = 0
 function Check($name, [scriptblock]$sb, [bool]$sollWerfen = $false) {
     $threw = $false; $msg = ''
     try { & $sb | Out-Null } catch { $threw = $true; $msg = $_.Exception.Message }
-    if ($threw -eq $sollWerfen) { $script:pass++; Write-Host "  OK   $name" -ForegroundColor Green }
-    else { $script:fail++; Write-Host "  FEHL $name (warf=$threw, erwartet=$sollWerfen) $msg" -ForegroundColor Red }
+    if ($threw -eq $sollWerfen) { $script:pass++; Write-Output "  OK   $name" }
+    else { $script:fail++; Write-Output "  FEHL $name (warf=$threw, erwartet=$sollWerfen) $msg" }
 }
 
 # --- Schritt "Tag zerlegen" als Funktion, wie im Workflow ---
@@ -24,7 +32,7 @@ function Split-ReleaseTag([string]$ref) {
     [pscustomobject]@{ Tool = $tool; Version = $ver }
 }
 
-Write-Host "`n######## A. Tag-Zerlegung ########"
+Write-Output "`n######## A. Tag-Zerlegung ########"
 Check 'gültiger Tag MailContactEditor/v1.0.0' { Split-ReleaseTag 'MailContactEditor/v1.0.0' }
 Check 'gültiger Tag LogViewer/v3.0.1'         { Split-ReleaseTag 'LogViewer/v3.0.1' }
 Check 'RUECKBAU: Tag ohne Werkzeug (v1.0.0)'   { Split-ReleaseTag 'v1.0.0' }                     $true
@@ -32,16 +40,16 @@ Check 'RUECKBAU: Tag ohne Patch (Tool/v1.0)'   { Split-ReleaseTag 'LogViewer/v1.
 Check 'RUECKBAU: unbekannter Ordner'           { Split-ReleaseTag 'GibtsNicht/v1.0.0' }          $true
 Check 'RUECKBAU: Ordner ohne release.psd1'     { Split-ReleaseTag 'ExchangeTester/v1.0.0' }      $true
 
-Write-Host "`n######## B. Metadaten lesbar + vollständig ########"
+Write-Output "`n######## B. Metadaten lesbar + vollständig ########"
 foreach ($t in 'MailContactEditor', 'LogViewer', 'AcmeExchange') {
     $meta = Import-PowerShellDataFile "$t/release.psd1"
     $ok = $meta.Main -and (Test-Path "$t/$($meta.Main)")
     $buildOk = (-not $meta.Build) -or (Test-Path "$t/$($meta.Build)")
-    if ($ok -and $buildOk) { $pass++; Write-Host "  OK   $t -> Main=$($meta.Main) Build=$($meta.Build) Bundle=$($meta.Bundle)" -ForegroundColor Green }
-    else { $fail++; Write-Host "  FEHL $t : Main oder Build zeigt ins Leere" -ForegroundColor Red }
+    if ($ok -and $buildOk) { $pass++; Write-Output "  OK   $t -> Main=$($meta.Main) Build=$($meta.Build) Bundle=$($meta.Bundle)" }
+    else { $fail++; Write-Output "  FEHL $t : Main oder Build zeigt ins Leere" }
 }
 
-Write-Host "`n######## C. Versionscheck je Werkzeug ########"
+Write-Output "`n######## C. Versionscheck je Werkzeug ########"
 . ./build/Get-ToolVersion.ps1
 foreach ($t in 'MailContactEditor', 'LogViewer', 'AcmeExchange') {
     $meta = Import-PowerShellDataFile "$t/release.psd1"
@@ -50,7 +58,7 @@ foreach ($t in 'MailContactEditor', 'LogViewer', 'AcmeExchange') {
     Check "$t : RUECKBAU Tag v0.0.1 wirft" { Assert-ToolVersion -Path "$t/$($meta.Main)" -Expected '0.0.1' } $true
 }
 
-Write-Host "`n######## D0. Bauen, was die folgenden Schritte brauchen ########"
+Write-Output "`n######## D0. Bauen, was die folgenden Schritte brauchen ########"
 # Die EXE-Dateien sind nicht versioniert - auf einem frischen Klon gibt es sie nicht.
 # Dieser Test muss sie deshalb selbst erzeugen, so wie der Workflow es tut; sonst
 # prüft er nur, was zufällig noch im Arbeitsverzeichnis liegt.
@@ -62,14 +70,14 @@ foreach ($t in 'MailContactEditor', 'LogViewer', 'AcmeExchange') {
     if (-not $m.Build) { continue }
     try {
         & "./$t/$($m.Build)" -Root (Resolve-Path $t).Path *>&1 | Out-Null
-        $pass++; Write-Host "  OK   $t gebaut ($($m.Build))" -ForegroundColor Green
+        $pass++; Write-Output "  OK   $t gebaut ($($m.Build))"
     }
     catch {
-        $fail++; Write-Host "  FEHL $t : Build scheiterte - $($_.Exception.Message)" -ForegroundColor Red
+        $fail++; Write-Output "  FEHL $t : Build scheiterte - $($_.Exception.Message)"
     }
 }
 
-Write-Host "`n######## D. Artefakte einsammeln (MailContactEditor, einzelne EXE) ########"
+Write-Output "`n######## D. Artefakte einsammeln (MailContactEditor, einzelne EXE) ########"
 $tool = 'MailContactEditor'
 $meta = Import-PowerShellDataFile "$tool/release.psd1"
 $ver = Get-ToolVersion -Path "$tool/$($meta.Main)"
@@ -81,10 +89,10 @@ foreach ($a in @($meta.Artifacts)) {
     Copy-Item $p dist/
 }
 $files = Get-ChildItem dist -File
-if ($files) { $pass++; Write-Host "  OK   dist enthält: $(($files.Name) -join ', ')" -ForegroundColor Green }
-else { $fail++; Write-Host '  FEHL dist ist leer' -ForegroundColor Red }
+if ($files) { $pass++; Write-Output "  OK   dist enthält: $(($files.Name) -join ', ')" }
+else { $fail++; Write-Output '  FEHL dist ist leer' }
 
-Write-Host "`n######## E. Bundle-Zweig (AcmeExchange, ZIP) ########"
+Write-Output "`n######## E. Bundle-Zweig (AcmeExchange, ZIP) ########"
 $tool = 'AcmeExchange'
 $meta = Import-PowerShellDataFile "$tool/release.psd1"
 $ver = Get-ToolVersion -Path "$tool/$($meta.Main)"
@@ -103,17 +111,17 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $archive = [IO.Compression.ZipFile]::OpenRead((Resolve-Path $zip))
 try { $names = @($archive.Entries.FullName) } finally { $archive.Dispose() }
 foreach ($must in 'Setup.exe', 'Invoke-AcmeExchangeCert.ps1', 'AcmeExchangeSetup.ps1') {
-    if ($names -contains $must) { $pass++; Write-Host "  OK   ZIP enthält $must" -ForegroundColor Green }
-    else { $fail++; Write-Host "  FEHL ZIP ohne $must" -ForegroundColor Red }
+    if ($names -contains $must) { $pass++; Write-Output "  OK   ZIP enthält $must" }
+    else { $fail++; Write-Output "  FEHL ZIP ohne $must" }
 }
 foreach ($darfNicht in 'release.psd1', 'build-exe.ps1', '.gitignore') {
-    if ($names -notcontains $darfNicht) { $pass++; Write-Host "  OK   $darfNicht nicht im ZIP" -ForegroundColor Green }
-    else { $fail++; Write-Host "  FEHL $darfNicht noch im ZIP" -ForegroundColor Red }
+    if ($names -notcontains $darfNicht) { $pass++; Write-Output "  OK   $darfNicht nicht im ZIP" }
+    else { $fail++; Write-Output "  FEHL $darfNicht noch im ZIP" }
 }
 # Compress-Archive schreibt unter Windows '\' als Trenner - auf beides pruefen.
 $libCount = ($names | Where-Object { $_ -match '^lib[\\/]' }).Count
-if ($libCount -gt 0) { $pass++; Write-Host "  OK   lib\ ist im ZIP ($libCount Dateien)" -ForegroundColor Green }
-else { $fail++; Write-Host '  FEHL lib\ fehlt im ZIP - Setup.exe wäre unbrauchbar' -ForegroundColor Red }
+if ($libCount -gt 0) { $pass++; Write-Output "  OK   lib\ ist im ZIP ($libCount Dateien)" }
+else { $fail++; Write-Output '  FEHL lib\ fehlt im ZIP - Setup.exe wäre unbrauchbar' }
 
-Write-Host "`n================ Bestanden: $pass   Fehlgeschlagen: $fail ================"
+Write-Output "`n================ Bestanden: $pass   Fehlgeschlagen: $fail ================"
 if ($fail -gt 0) { exit 1 }

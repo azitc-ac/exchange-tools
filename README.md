@@ -54,7 +54,23 @@ git push origin MailContactEditor/v1.0.0
 Dateien ins Release gehören, steht in der `release.psd1` des Werkzeugs; ein Werkzeug ohne
 diese Datei bekommt kein Release. Die Versionsnummer steht an genau einer Stelle – als
 `$script:Version` im Hauptskript – und der Workflow bricht ab, wenn der Tag etwas anderes
-behauptet. `build\Test-ReleaseLogic.ps1` prüft diese Kette lokal, bevor ein Tag gesetzt wird.
+behauptet.
+
+## Prüfungen
+
+```powershell
+.\build\Invoke-AllTests.ps1            # alles
+.\build\Invoke-AllTests.ps1 -SkipBuild # ohne EXE-Bau, falls ps2exe fehlt
+```
+
+Vier Prüfungen hinter einem Einstiegspunkt: **Syntax** (jede `.ps1` wird geparst),
+**Encoding** (Umlaute nur mit UTF-8-BOM, sonst zeigt PowerShell 5.1 Mojibake),
+**Prolog** (die eingebetteten Prüfblöcke stimmen mit ihrer Quelle überein, die
+Mindestversion wird erzwungen) und **Release-Logik** (die Schritte aus
+`release.yml`, inklusive echtem EXE-Bau).
+
+`.github/workflows/ci.yml` ruft bei jedem Push und jedem Pull Request genau dieses
+Skript auf – „lokal grün" und „CI grün" bedeuten damit dasselbe.
 
 Die EXE-Dateien sind **nicht signiert**: Windows SmartScreen meldet sich beim ersten Start,
 und manche Virenscanner stufen mit ps2exe erzeugte Dateien als verdächtig ein. Wer das

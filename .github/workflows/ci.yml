@@ -1,0 +1,36 @@
+name: CI
+
+# Bei jedem Push und jedem Pull Request. Die Prüfungen sollen nicht davon abhängen,
+# dass jemand daran denkt, sie laufen zu lassen.
+on:
+  push:
+    branches: ['**']
+    tags-ignore: ['**']      # Tags lösen das Release aus, nicht diesen Lauf
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ps2exe bereitstellen
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Ohne Trusted fragt Install-Module nach - in einem Runner ohne Eingabe ein Abbruch.
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module ps2exe -Force -Scope CurrentUser -AllowClobber -SkipPublisherCheck
+          Write-Host ("ps2exe {0}" -f (Get-Module -ListAvailable ps2exe | Select-Object -First 1).Version)
+
+      - name: Alle Prüfungen
+        shell: powershell
+        # Windows PowerShell 5.1 - dieselbe Ausgabe, für die die Werkzeuge gedacht sind.
+        # Ein einziger Einstiegspunkt, damit "lokal grün" und "CI grün" dasselbe heißt.
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\build\Invoke-AllTests.ps1

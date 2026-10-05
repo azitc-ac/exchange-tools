@@ -1,4 +1,4 @@
-# <prolog:onprem v1 - Quelle: build/Prolog.OnPrem.ps1, eingefügt von build/Sync-Prolog.ps1.
+﻿# <prolog:onprem v1 - Quelle: build/Prolog.OnPrem.ps1, eingefügt von build/Sync-Prolog.ps1.
 #                     NICHT von Hand ändern - build/Test-Prolog.ps1 meldet jede Abweichung.>
 # Erwartet davor gesetzt:
 #   $script:RequiredCmdlets = @('Get-Queue')      (Cmdlets, die das Werkzeug wirklich braucht)

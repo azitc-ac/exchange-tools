@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Prüft, dass jedes Werkzeug seine Voraussetzungen erzwingt - und zwar einheitlich.
 
@@ -16,17 +16,25 @@
     .\build\Test-Prolog.ps1
 #>
 [CmdletBinding()]
-param([string]$Repo = (Split-Path $PSScriptRoot -Parent))
+param([string]$Repo)
+# $PSScriptRoot kommt beim Start ueber -File in manchen Shells leer an; dann den
+# eigenen Pfad anders ermitteln, sonst scheitert schon die Parameterbindung.
+if (-not $Repo) {
+    $hier = if ($PSScriptRoot) { $PSScriptRoot }
+            elseif ($MyInvocation.MyCommand.Path) { Split-Path $MyInvocation.MyCommand.Path -Parent }
+            else { (Get-Location).Path }
+    $Repo = Split-Path $hier -Parent
+}
 $ErrorActionPreference = 'Stop'
 
 $pass = 0; $fail = 0
-function Ok($t)   { $script:pass++; Write-Host "  OK   $t" -ForegroundColor Green }
-function Bad($t)  { $script:fail++; Write-Host "  FEHL $t" -ForegroundColor Red }
+function Ok($t)   { $script:pass++; Write-Output "  OK   $t" }
+function Bad($t)  { $script:fail++; Write-Output "  FEHL $t" }
 
 $map = Import-PowerShellDataFile (Join-Path $Repo 'build\prolog-map.psd1')
 $min = $map.MinimumExoModuleVersion
 
-Write-Host "`n######## 1. Prolog-Kopien stimmen mit der Quelle überein ########"
+Write-Output "`n######## 1. Prolog-Kopien stimmen mit der Quelle überein ########"
 foreach ($t in $map.Tools) {
     $path = Join-Path $Repo (Join-Path $t.Tool $t.Main)
     if (-not (Test-Path $path)) { Bad "$($t.Tool): Hauptskript fehlt ($($t.Main))"; continue }
@@ -44,7 +52,7 @@ foreach ($t in $map.Tools) {
     else { Bad "$($t.Tool): Prolog weicht von build/Prolog.$($t.Prolog).ps1 ab - build\Sync-Prolog.ps1 laufen lassen" }
 }
 
-Write-Host "`n######## 2. Mindestversion $min wird überall erzwungen ########"
+Write-Output "`n######## 2. Mindestversion $min wird überall erzwungen ########"
 # Der Prolog holt sie aus $script:RequiredModuleVersion, die Eigenbau-Werkzeuge
 # aus $script:MinimumExoModuleVersion. Beide Wege sind recht, der Wert muss stimmen.
 $exoAlle = @()
@@ -64,7 +72,7 @@ foreach ($e in $exoAlle) {
     Ok "$($e.Tool)/$($e.Main) fordert $min und vergleicht"
 }
 
-Write-Host "`n######## 3. Keine Exchange-Aufrufe ohne vorherige Prüfung ########"
+Write-Output "`n######## 3. Keine Exchange-Aufrufe ohne vorherige Prüfung ########"
 $verdaechtig = @()
 foreach ($d in (Get-ChildItem $Repo -Directory | Where-Object { $_.Name -notmatch '^\.|^build$' })) {
     foreach ($f in (Get-ChildItem $d.FullName -Filter *.ps1 -Recurse -File |
@@ -96,9 +104,9 @@ if ($erledigt) { $erledigt | ForEach-Object { Bad "KnownGaps nennt '$_', aber do
 else { Ok 'KnownGaps enthält keine erledigten Einträge' }
 
 if ($gaps) {
-    Write-Host "`n  Noch offen (aus build/prolog-map.psd1):" -ForegroundColor Yellow
-    $gaps | ForEach-Object { Write-Host ("    {0,-38} {1}" -f $_.Datei, $_.Grund) -ForegroundColor DarkYellow }
+    Write-Output "`n  Noch offen (aus build/prolog-map.psd1):"
+    $gaps | ForEach-Object { Write-Output ("    {0,-38} {1}" -f $_.Datei, $_.Grund) }
 }
 
-Write-Host "`n================ Bestanden: $pass   Fehlgeschlagen: $fail ================"
+Write-Output "`n================ Bestanden: $pass   Fehlgeschlagen: $fail ================"
 if ($fail -gt 0) { exit 1 }

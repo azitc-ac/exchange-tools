@@ -1,4 +1,4 @@
-# <prolog:exo v1 - Quelle: build/Prolog.Exo.ps1, eingefügt von build/Sync-Prolog.ps1.
+﻿# <prolog:exo v1 - Quelle: build/Prolog.Exo.ps1, eingefügt von build/Sync-Prolog.ps1.
 #                  NICHT von Hand ändern - build/Test-Prolog.ps1 meldet jede Abweichung.>
 # Erwartet davor gesetzt:
 #   $script:RequiredModuleVersion = '3.6.0'            (Mindestversion ExchangeOnlineManagement)
