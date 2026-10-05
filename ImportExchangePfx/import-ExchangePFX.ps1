@@ -1,5 +1,8 @@
 ﻿# Voraussetzungen. Der Block zwischen den Markern stammt aus build/Prolog.OnPrem.ps1
 # und wird von build/Sync-Prolog.ps1 gepflegt - nicht von Hand ändern.
+# Einzige Stelle fuer die Versionsnummer; Build und Release-Tag lesen sie hier aus.
+$script:Version = '1.0.0'
+
 $script:RequiredCmdlets = @('Import-ExchangeCertificate')
 $script:ToolIsGui       = $true
 # <prolog:onprem v1 - Quelle: build/Prolog.OnPrem.ps1, eingefügt von build/Sync-Prolog.ps1.

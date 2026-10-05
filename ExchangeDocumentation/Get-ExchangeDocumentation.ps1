@@ -4,6 +4,10 @@
     [switch]$includeMobileDevices
 )
 
+# Einzige Stelle fuer die Versionsnummer; Build und Release-Tag lesen sie hier aus.
+$script:Version = '1.0.0'
+
+
 $FormatEnumerationLimit = -1
 $sep         = [char]0x00A7  # §  — multi-value separator within CSV fields
 $csvDelim    = ";"

@@ -1,11 +1,11 @@
 ﻿@{
-    Main      = 'AcmeExchangeSetup.ps1'
-    Build     = 'build-exe.ps1'
-
-    # Setup.exe läuft NICHT allein - sie ist ein Starter für die GUI und braucht
-    # Invoke-AcmeExchangeCert.ps1 und lib\ daneben. Darum nur als Bundle ausliefern.
-    Artifacts = @()
-    Bundle    = $true
-
-    Notes     = 'Das ZIP vollständig entpacken: Setup.exe braucht Invoke-AcmeExchangeCert.ps1 und lib\ im selben Ordner. Auf einem Exchange-Server mit erhöhten Rechten starten.'
+    Main         = 'AcmeExchangeSetup.ps1'
+    Exe          = 'Setup.exe'
+    Title        = 'Exchange ACME Certificate Setup'
+    Description  = 'Setup und Verwaltung der Zertifikatserneuerung'
+    RequireAdmin = $true
+    Icon         = 'icon.ico'
+    Artifacts    = @()
+    Bundle       = $true
+    Notes        = 'Das ZIP vollständig entpacken: Setup.exe braucht Invoke-AcmeExchangeCert.ps1 und lib\ im selben Ordner. Auf einem Exchange-Server mit erhöhten Rechten starten.'
 }

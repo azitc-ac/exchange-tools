@@ -84,6 +84,10 @@ param(
     [string]$UserPrincipalName
 )
 
+# Einzige Stelle fuer die Versionsnummer; Build und Release-Tag lesen sie hier aus.
+$script:Version = '1.0.0'
+
+
 $ErrorActionPreference = 'Continue'
 
 # ===================================================================================

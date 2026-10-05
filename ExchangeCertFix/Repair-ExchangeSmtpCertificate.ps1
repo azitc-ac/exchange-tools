@@ -54,6 +54,10 @@ param(
     [switch]$DiagnoseOnly
 )
 
+# Einzige Stelle fuer die Versionsnummer; Build und Release-Tag lesen sie hier aus.
+$script:Version = '1.0.0'
+
+
 #region ---------------------------------------------------------- Helper functions
 
 $script:ChangeLog = New-Object System.Collections.ArrayList

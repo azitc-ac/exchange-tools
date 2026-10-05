@@ -23,6 +23,10 @@ param(
     [long]$MaxItemSize = 10MB  # Skip items larger than this (10MB default)
 )
 
+# Einzige Stelle fuer die Versionsnummer; Build und Release-Tag lesen sie hier aus.
+$script:Version = '1.0.0'
+
+
 # Load functions
 . "$PSScriptRoot\PFmig-Functions.ps1"
 

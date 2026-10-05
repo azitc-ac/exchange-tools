@@ -1,4 +1,7 @@
 ﻿#Requires -Version 5.1
+# Einzige Stelle fuer die Versionsnummer; Build und Release-Tag lesen sie hier aus.
+$script:Version = '1.0.0'
+
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing, System.Data
 [System.Windows.Forms.Application]::EnableVisualStyles()
 [System.Windows.Forms.Application]::SetCompatibleTextRenderingDefault($false)

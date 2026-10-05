@@ -2,6 +2,9 @@
 # prüfen, ob die Exchange-Verwaltungsshell überhaupt geladen ist - außerhalb der EMS
 # brach es mit "Get-Queue wird nicht erkannt" ab. Der Block zwischen den Markern stammt
 # aus build/Prolog.OnPrem.ps1 und wird von build/Sync-Prolog.ps1 gepflegt.
+# Einzige Stelle fuer die Versionsnummer; Build und Release-Tag lesen sie hier aus.
+$script:Version = '1.0.0'
+
 $script:RequiredCmdlets = @('Get-Queue', 'Get-Message')
 $script:ToolIsGui       = $true
 # <prolog:onprem v1 - Quelle: build/Prolog.OnPrem.ps1, eingefügt von build/Sync-Prolog.ps1.

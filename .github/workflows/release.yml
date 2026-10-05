@@ -63,10 +63,12 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $tool = '${{ steps.tag.outputs.tool }}'
           $meta = Import-PowerShellDataFile "$tool/release.psd1"
-          if ($meta.Build) {
-            & "./$tool/$($meta.Build)" -Root (Resolve-Path $tool).Path
+          if ($meta.Exe) {
+            # Ein gemeinsamer Bauer fuer alle Werkzeuge; was sie unterscheidet,
+            # steht in ihrer release.psd1.
+            & ./build/Build-ToolExe.ps1 -Tool $tool
           } else {
-            Write-Host 'Kein Build-Skript hinterlegt - es werden nur die Quelldateien ausgeliefert.'
+            Write-Host 'Kein Exe-Eintrag - es werden die Quelldateien als ZIP ausgeliefert.'
           }
 
       - name: Artefakte einsammeln
@@ -93,7 +95,7 @@ jobs:
             Copy-Item "$tool/*" $stage -Recurse -Force
             # -Include greift nur mit Wildcard im Pfad; ohne ihn bliebe die Liste leer.
             # -Force, damit auch versteckte Dateien wie .gitignore erfasst werden.
-            Get-ChildItem "$stage\*" -Include 'release.psd1', 'build-exe.ps1', 'Build-*.ps1', '.gitignore' -Recurse -Force |
+            Get-ChildItem "$stage\*" -Include 'release.psd1', '.gitignore' -Recurse -Force |
               Remove-Item -Force
             Compress-Archive -Path "$stage/*" -DestinationPath "dist/$tool-$ver.zip" -Force
           }

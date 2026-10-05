@@ -38,21 +38,43 @@ Check 'gültiger Tag LogViewer/v3.0.1'         { Split-ReleaseTag 'LogViewer/v3.
 Check 'RUECKBAU: Tag ohne Werkzeug (v1.0.0)'   { Split-ReleaseTag 'v1.0.0' }                     $true
 Check 'RUECKBAU: Tag ohne Patch (Tool/v1.0)'   { Split-ReleaseTag 'LogViewer/v1.0' }             $true
 Check 'RUECKBAU: unbekannter Ordner'           { Split-ReleaseTag 'GibtsNicht/v1.0.0' }          $true
-Check 'RUECKBAU: Ordner ohne release.psd1'     { Split-ReleaseTag 'ExchangeTester/v1.0.0' }      $true
+# 'build' ist kein Werkzeug und bekommt nie eine release.psd1 - taugt also dauerhaft
+# als Gegenprobe, anders als ein Werkzeugordner, der spaeter doch eine bekommt.
+Check 'RUECKBAU: Ordner ohne release.psd1'     { Split-ReleaseTag 'build/v1.0.0' }               $true
 
-Write-Output "`n######## B. Metadaten lesbar + vollständig ########"
-foreach ($t in 'MailContactEditor', 'LogViewer', 'AcmeExchange') {
+Write-Output "`n######## B. Jedes Werkzeug ist release-faehig ########"
+# Nicht mehr drei fest verdrahtete Namen: geprüft wird jeder Werkzeugordner. Wer
+# keine release.psd1 hat, faellt hier auf - sonst bliebe er stillschweigend ohne
+# Release, so wie neun von zwoelf es monatelang waren.
+$werkzeuge = @(Get-ChildItem . -Directory |
+               Where-Object { $_.Name -notmatch '^\.|^build$|^dist$' } |
+               Sort-Object Name)
+$ohneMeta = @($werkzeuge | Where-Object { -not (Test-Path (Join-Path $_.Name 'release.psd1')) })
+if ($ohneMeta) {
+    foreach ($o in $ohneMeta) { $fail++; Write-Output "  FEHL $($o.Name): keine release.psd1 - bekaeme nie ein Release" }
+}
+else { $pass++; Write-Output "  OK   alle $($werkzeuge.Count) Werkzeuge haben eine release.psd1" }
+
+foreach ($w in $werkzeuge) {
+    $t = $w.Name
     $meta = Import-PowerShellDataFile "$t/release.psd1"
-    $ok = $meta.Main -and (Test-Path "$t/$($meta.Main)")
-    $buildOk = (-not $meta.Build) -or (Test-Path "$t/$($meta.Build)")
-    if ($ok -and $buildOk) { $pass++; Write-Output "  OK   $t -> Main=$($meta.Main) Build=$($meta.Build) Bundle=$($meta.Bundle)" }
-    else { $fail++; Write-Output "  FEHL $t : Main oder Build zeigt ins Leere" }
+    if (-not ($meta.Main -and (Test-Path "$t/$($meta.Main)"))) {
+        $fail++; Write-Output "  FEHL $t : Main zeigt ins Leere ($($meta.Main))"; continue
+    }
+    # Entweder eine EXE oder ein Bundle - ohne beides bliebe das Release leer.
+    if (-not $meta.Exe -and -not $meta.Bundle) {
+        $fail++; Write-Output "  FEHL $t : weder Exe noch Bundle - das Release waere leer"; continue
+    }
+    $art = if ($meta.Exe) { "Exe=$($meta.Exe)" } else { 'ZIP' }
+    $pass++; Write-Output "  OK   $t -> Main=$($meta.Main), $art, Bundle=$($meta.Bundle)"
 }
 
 Write-Output "`n######## C. Versionscheck je Werkzeug ########"
 . ./build/Get-ToolVersion.ps1
-foreach ($t in 'MailContactEditor', 'LogViewer', 'AcmeExchange') {
+foreach ($w in $werkzeuge) {
+    $t = $w.Name
     $meta = Import-PowerShellDataFile "$t/release.psd1"
+    if (-not (Test-Path "$t/$($meta.Main)")) { continue }
     $v = Get-ToolVersion -Path "$t/$($meta.Main)"
     Check "$t : Tag v$v passt" { Assert-ToolVersion -Path "$t/$($meta.Main)" -Expected $v }
     Check "$t : RUECKBAU Tag v0.0.1 wirft" { Assert-ToolVersion -Path "$t/$($meta.Main)" -Expected '0.0.1' } $true
@@ -65,12 +87,20 @@ Write-Output "`n######## D0. Bauen, was die folgenden Schritte brauchen ########
 if (-not (Get-Module -ListAvailable ps2exe)) {
     throw 'Das Modul ps2exe fehlt - ohne es lässt sich die Release-Kette nicht prüfen. Install-Module ps2exe -Scope CurrentUser'
 }
-foreach ($t in 'MailContactEditor', 'LogViewer', 'AcmeExchange') {
+foreach ($w in $werkzeuge) {
+    $t = $w.Name
     $m = Import-PowerShellDataFile "$t/release.psd1"
-    if (-not $m.Build) { continue }
+    if (-not $m.Exe) { continue }
     try {
-        & "./$t/$($m.Build)" -Root (Resolve-Path $t).Path *>&1 | Out-Null
-        $pass++; Write-Output "  OK   $t gebaut ($($m.Build))"
+        & ./build/Build-ToolExe.ps1 -Tool $t *>&1 | Out-Null
+        $exe = Join-Path $t $m.Exe
+        if (Test-Path $exe) {
+            $fv = (Get-Item $exe).VersionInfo.FileVersion
+            $soll = Get-ToolVersion -Path "$t/$($m.Main)"
+            if ($fv -eq $soll) { $pass++; Write-Output ("  OK   {0,-22} {1} v{2}" -f $t, $m.Exe, $fv) }
+            else { $fail++; Write-Output "  FEHL $t : EXE traegt v$fv, Skript sagt v$soll" }
+        }
+        else { $fail++; Write-Output "  FEHL $t : $($m.Exe) wurde nicht erzeugt" }
     }
     catch {
         $fail++; Write-Output "  FEHL $t : Build scheiterte - $($_.Exception.Message)"

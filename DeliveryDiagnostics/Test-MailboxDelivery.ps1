@@ -34,6 +34,10 @@ param(
     [int]$EventHours = 6,
     [switch]$SkipRemote          # nur lokal prüfbare Dinge (wenn kein WinRM zum Zielserver)
 )
+
+# Einzige Stelle fuer die Versionsnummer; Build und Release-Tag lesen sie hier aus.
+$script:Version = '1.0.0'
+
 $ErrorActionPreference = 'Continue'
 $script:Findings = New-Object Collections.ArrayList
 
