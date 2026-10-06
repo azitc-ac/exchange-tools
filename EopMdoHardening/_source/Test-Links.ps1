@@ -3,7 +3,7 @@
     Prueft die Fundort-Links des EOP/MDO-Hardening-Standards.
 
 .DESCRIPTION
-    Ersatz fuer das verlorene verify_links.py. Zwei Stufen:
+    Zwei Stufen:
 
     OFFLINE (immer, schnell, fuer CI geeignet)
       1. Jede ID aus der Kuerzel-Legende der README hat genau eine Zeile in den Fundort-Tabellen,

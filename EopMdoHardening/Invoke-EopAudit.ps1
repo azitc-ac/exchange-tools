@@ -133,7 +133,7 @@ function ConvertTo-DisplayValue {
 }
 
 # ===================================================================================
-#  Fundorte  (generiert aus links.py - nicht von Hand bearbeiten)
+#  Fundorte  (muss mit der Tabelle in der README uebereinstimmen: _source\Test-Links.ps1)
 #
 #  Je Pruefpunkt: Klickpfad im Portal, Deep-Link und der Microsoft-Learn-Abschnitt,
 #  der die Einstellung beschreibt. Alle Learn-Anker sind gegen die Quelldateien
