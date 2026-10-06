@@ -13,7 +13,7 @@
 #>
 
 # Einzige Stelle fuer die Versionsnummer; Build und Release-Tag lesen sie hier aus.
-$script:Version = '1.0.0'
+$script:Version = '1.0.1'
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -1766,8 +1766,14 @@ $chkUseCurrentUser.Add_CheckedChanged({
     if (-not $useExplicit) { $txtPass.Clear() }
 })
 
-# Config file path (same directory as this script)
-$_scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path $MyInvocation.MyCommand.Path }
+# Config file path (same directory as this script - or as the EXE, when built with ps2exe).
+# In a ps2exe build BOTH $PSScriptRoot and $MyInvocation.MyCommand.Path are empty, so the
+# two-step version failed with "Cannot bind argument to parameter 'Path' because it is null"
+# before the window ever appeared. The process image path is the only reliable source there.
+$_scriptDir =
+    if ($PSScriptRoot) { $PSScriptRoot }
+    elseif ($MyInvocation.MyCommand.Path) { Split-Path $MyInvocation.MyCommand.Path -Parent }
+    else { Split-Path ([System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName) -Parent }
 $script:configPath = Join-Path $_scriptDir "ExchangeTester.config"
 
 $btnCreateApp.Add_Click({

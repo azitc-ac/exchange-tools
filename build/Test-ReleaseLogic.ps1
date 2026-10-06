@@ -69,6 +69,33 @@ foreach ($w in $werkzeuge) {
     $pass++; Write-Output "  OK   $t -> Main=$($meta.Main), $art, Bundle=$($meta.Bundle)"
 }
 
+Write-Output "`n######## B2. EXE-tauglicher Pfad-Fallback ########"
+# In einer mit ps2exe gebauten EXE sind $PSScriptRoot UND $MyInvocation.MyCommand.Path
+# leer. Wer daraus einen Pfad ableitet, bekommt beim Start
+# "Cannot bind argument to parameter 'Path' because it is null" - und zwar bevor ein
+# Fenster erscheint. Genau so ist ExchangeTester.exe ausgeliefert worden.
+# Einziger verlaesslicher Weg dort: der Prozesspfad.
+foreach ($w in $werkzeuge) {
+    $t = $w.Name
+    $meta = Import-PowerShellDataFile "$t/release.psd1"
+    if (-not $meta.Exe) { continue }          # nur was als EXE ausgeliefert wird
+    $pfad = "$t/$($meta.Main)"
+    if (-not (Test-Path $pfad)) { continue }
+    $txt = [IO.File]::ReadAllText((Resolve-Path $pfad), [Text.Encoding]::UTF8)
+
+    if ($txt -notmatch '\$PSScriptRoot|\$MyInvocation\.MyCommand\.Path|\$PSCommandPath') {
+        $pass++; Write-Output "  OK   $t leitet keinen Pfad aus dem Skriptort ab"
+        continue
+    }
+    if ($txt -match 'MainModule\.FileName') {
+        $pass++; Write-Output "  OK   $t hat den Prozesspfad als Rueckfallebene"
+    }
+    else {
+        $fail++
+        Write-Output "  FEHL $t ($($meta.Main)): nutzt `$PSScriptRoot ohne Rueckfall auf MainModule.FileName - die EXE bricht beim Start ab"
+    }
+}
+
 Write-Output "`n######## C. Versionscheck je Werkzeug ########"
 . ./build/Get-ToolVersion.ps1
 foreach ($w in $werkzeuge) {
