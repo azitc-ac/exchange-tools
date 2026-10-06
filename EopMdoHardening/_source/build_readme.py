@@ -1,5 +1,14 @@
 # -*- coding: utf-8 -*-
-"""README fuer den Repo-Unterordner: Kuerzel-Legende und vollstaendige Fundort-Tabelle."""
+"""README fuer den Repo-Unterordner: Kuerzel-Legende und vollstaendige Fundort-Tabelle.
+
+Aufruf: python3 build_readme.py  (im Ordner _source)
+
+links.py ist die einzige Stelle, an der die Fundorte gepflegt werden. Die README wird
+daraus erzeugt und nicht von Hand bearbeitet - sonst geht die Aenderung beim naechsten
+Lauf verloren. Dieselben Daten speisen die Spalten Fundort / Portal oeffnen / Microsoft
+Learn der Checkliste, Anhang E des Guides und die Tabelle $script:Links in
+Invoke-EopAudit.ps1. Test-Links.ps1 meldet, wenn README und Audit-Skript auseinanderlaufen.
+"""
 import io, re, sys, collections
 sys.path.insert(0, '.')
 from links import LINKS, PREFIXES, UNDOCUMENTED, WEAK_LEARN, ALIASES
