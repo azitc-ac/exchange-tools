@@ -83,11 +83,12 @@ vermeiden will, nimmt das PowerShell-Skript aus dem Quellordner statt der EXE.
 
 ## Herkunft
 
-Dieses Repo führt bisher getrennte Ablagen zusammen. Mit ihrer vollständigen
-Entwicklungsgeschichte übernommen wurden `AcmeExchange` (vormals `azitc-ac/Exchange-ACME-Cert`),
-`ExchangeTester` (vormals `azitc-ac/Exchange-Tester`) und `PublicFolderMigration` (vormals
-`azitc-ac/PF2SharedMBXOnprem`). Die übrigen Werkzeuge kamen als Einzelskripte dazu – jeweils der
-jüngste Stand aus Servern und OneDrive.
+Dieses Repo führt bisher getrennte Ablagen zusammen: `AcmeExchange` (vormals
+`azitc-ac/Exchange-ACME-Cert`), `ExchangeTester` (vormals `azitc-ac/Exchange-Tester`) und
+`PublicFolderMigration` (vormals `azitc-ac/PF2SharedMBXOnprem`). Hier liegt jeweils der Stand
+zum Zeitpunkt der Zusammenführung; die frühere Entwicklungsgeschichte steht nicht in diesem
+Repo, sondern in den drei alten Ablagen. Die übrigen Werkzeuge kamen als Einzelskripte dazu –
+jeweils der jüngste Stand aus Servern und OneDrive.
 
 ## Lizenz
 
