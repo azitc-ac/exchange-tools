@@ -15,17 +15,15 @@ Alle 120 Learn-Sprungmarken sind gegen die Quelldateien von `MicrosoftDocs/defen
 `MicrosoftDocs/office-docs-powershell` geprüft (Stand August 2026). Die Defender-Deep-Links
 stammen aus den Learn-Artikeln selbst. Nicht belegt sind fünf EAC-Links, siehe `UNDOCUMENTED`.
 
+## Herkunft der ausgelieferten Dateien
+
+Checkliste, Guide (`.docx` und `.pdf`) und die beiden Skripte stammen aus
+`EOP-MDO_Hardening-Standard_5.zip` (Dateien vom 04.09.2026). Die Skripte wurden danach im
+Repo angepasst (Prolog, siehe `build\`); Checkliste und Guide sind unverändert.
+
 ## Was in diesem Ordner noch fehlt
 
-Diese Dateien gehören dazu, sind aber beim Abräumen der Cloud-Sitzung verloren gegangen und
-liegen nur noch im ausgelieferten `EOP-MDO_Hardening-Standard.zip`:
-
-- `Invoke-EopAudit.ps1` — rein lesendes Audit, 120 Prüfpunkte, CSV + HTML-Report + JSON-Export
-- `Invoke-EopHardening.ps1` — setzt die Baseline, Vorschau ist Standardmodus
-- `EOP-MDO_Assessment-Checkliste.xlsx` — 120 Prüfpunkte zum Ausfüllen, Blatt „Kürzel" als Legende
-- `EOP-MDO_Best-Practice-Guide.docx` / `.pdf` — Begründung je Prüfpunkt, Anhang E ist die Fundort-Tabelle
-
-Nicht mehr vorhanden sind außerdem die Bauquellen des Guides und der Checkliste
+Nicht mehr vorhanden sind die Bauquellen des Guides und der Checkliste
 (`items_a..d.py`, `guide_*.md`, `build_xlsx.py`, `build_guide.py`, `build_appendix_e.py`,
 `verify_links.py`) sowie die Testskripte (`Mock-Exo.ps1`, `Test-Ps51Compat.ps1`,
 `Test-Connection.ps1`, `Test-Report.ps1`). Wer den Guide künftig ändern will, braucht die wieder.
