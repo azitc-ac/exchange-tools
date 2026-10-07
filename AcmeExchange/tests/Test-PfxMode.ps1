@@ -224,6 +224,13 @@ Check 'not deployed -> installs once, remembers the subject, archives the PFX, m
     }
     $bad.Count -eq 0
 }
+# Note on the archiving comparison in Move-ImportedPfx: it broke when one side of the
+# path carried an 8.3 short name (a build agent's TEMP is C:\Users\RUNNER~1\...), which
+# Resolve-Path expands on one side only - the PFX then silently stayed in the drop folder
+# with its private key. There is no local test for it: short names are off on most
+# volumes, and Get-ChildItem, [IO.FileInfo] and subst all normalise to the same string,
+# so the mismatch cannot be provoked here. The build agent is the environment that shows
+# it, and a green run there is what proves the fix.
 Reset-Case; $script:Deployed = $true
 Check 'already deployed -> no install (no iisreset), but the expiry check runs' {
     Invoke-PfxImport

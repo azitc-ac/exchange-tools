@@ -1115,7 +1115,24 @@ function Move-ImportedPfx {
     param($File)
     $s = Get-PfxSettings
     if (-not $s.ArchiveAfterImport) { return }
-    if ($File.DirectoryName -ne (Resolve-Path $s.DropFolder -ErrorAction SilentlyContinue).Path) { return }  # -PfxPath from elsewhere: leave it alone
+
+    # Resolve BOTH sides the same way before comparing. Comparing $File.DirectoryName
+    # against a resolved DropFolder breaks as soon as one side carries an 8.3 short
+    # name (C:\Users\RUNNER~1\... on a build agent, or any path reached through one):
+    # the strings differ, the function returns, and the PFX silently stays in the drop
+    # folder with its private key - exactly what archiving is meant to prevent.
+    $dropDir = (Resolve-Path -LiteralPath $s.DropFolder      -ErrorAction SilentlyContinue).Path
+    $fileDir = (Resolve-Path -LiteralPath $File.DirectoryName -ErrorAction SilentlyContinue).Path
+    if (-not $dropDir -or -not $fileDir) {
+        Write-Log "PFX not archived: cannot resolve '$($File.DirectoryName)' or '$($s.DropFolder)'." WARN
+        return
+    }
+    if ($fileDir.TrimEnd('\') -ine $dropDir.TrimEnd('\')) {
+        # -PfxPath from elsewhere: leave it alone. Say so instead of returning in silence.
+        Write-Log "PFX left in place: '$fileDir' is not the drop folder '$dropDir'." INFO
+        return
+    }
+
     $archive = Join-Path $s.DropFolder 'archive'
     if (-not (Test-Path $archive)) { New-Item -ItemType Directory -Path $archive -Force | Out-Null; Protect-PfxPath -Path $archive }
     $dest = Join-Path $archive ("{0}_{1}{2}" -f $File.BaseName, (Get-Date -Format 'yyyyMMdd_HHmmss'), $File.Extension)
