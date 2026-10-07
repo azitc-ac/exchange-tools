@@ -224,13 +224,26 @@ Check 'not deployed -> installs once, remembers the subject, archives the PFX, m
     }
     $bad.Count -eq 0
 }
-# Note on the archiving comparison in Move-ImportedPfx: it broke when one side of the
-# path carried an 8.3 short name (a build agent's TEMP is C:\Users\RUNNER~1\...), which
-# Resolve-Path expands on one side only - the PFX then silently stayed in the drop folder
-# with its private key. There is no local test for it: short names are off on most
-# volumes, and Get-ChildItem, [IO.FileInfo] and subst all normalise to the same string,
-# so the mismatch cannot be provoked here. The build agent is the environment that shows
-# it, and a green run there is what proves the fix.
+# Archiving compares the file's directory with the configured drop folder. That broke
+# when one side carried an 8.3 short name - a build agent's TEMP is
+# C:\Users\RUNNER~1\... - because Resolve-Path normalises "..", casing and drive-relative
+# paths but leaves a short name short. The PFX then stayed in the drop folder with its
+# private key, in silence. New folders rarely get short names any more, but the ones
+# Windows created long ago still do, which makes the case testable anywhere.
+Check 'short path and long path compare equal' {
+    if (-not (Test-Path 'C:\PROGRA~1')) { return $true }   # no short name here, nothing to prove
+    $kurz = Resolve-LongPath 'C:\PROGRA~1'
+    $lang = Resolve-LongPath (Resolve-Path 'C:\Program Files').Path
+    if ($kurz -ine $lang) { Write-Host "      '$kurz' vs '$lang'" -ForegroundColor Yellow }
+    $kurz -ieq $lang
+}
+Check 'Resolve-Path alone would NOT be enough' {
+    if (-not (Test-Path 'C:\PROGRA~1')) { return $true }
+    # Guards the reason this helper exists: if Resolve-Path ever started expanding
+    # short names, Resolve-LongPath could go - and this check would say so.
+    (Resolve-Path -LiteralPath 'C:\PROGRA~1').Path -ine 'C:\Program Files'
+}
+
 Reset-Case; $script:Deployed = $true
 Check 'already deployed -> no install (no iisreset), but the expiry check runs' {
     Invoke-PfxImport

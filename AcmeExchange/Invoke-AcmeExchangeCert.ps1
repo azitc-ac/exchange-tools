@@ -1110,6 +1110,36 @@ function New-CertFromPfx {
     }
 }
 
+function Resolve-LongPath {
+    <#
+      Full path in its long form. Resolve-Path alone is not enough: it normalises
+      "..", drive-relative paths and casing, but it leaves an 8.3 short name short.
+      A configured drop folder may well be short (a build agent's TEMP is
+      C:\Users\RUNNER~1\...), while a FileInfo coming from Get-ChildItem is long -
+      comparing the two as strings then fails even though both mean the same folder.
+      Only GetLongPathName settles that.
+    #>
+    param([string]$Path)
+    if (-not $Path) { return $null }
+    $resolved = (Resolve-Path -LiteralPath $Path -ErrorAction SilentlyContinue).Path
+    if (-not $resolved) { return $null }
+
+    if (-not ('Native.LongPath' -as [type])) {
+        try {
+            Add-Type -Namespace Native -Name LongPath -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+public static extern uint GetLongPathName(string lpszShortPath, System.Text.StringBuilder lpszLongPath, uint cchBuffer);
+'@ -ErrorAction Stop
+        } catch { return $resolved }   # ohne die API bleibt der aufgeloeste Pfad das Beste
+    }
+    try {
+        $sb = New-Object System.Text.StringBuilder 1024
+        $len = [Native.LongPath]::GetLongPathName($resolved, $sb, 1024)
+        if ($len -gt 0 -and $len -lt 1024) { return $sb.ToString() }
+    } catch { }
+    $resolved
+}
+
 function Move-ImportedPfx {
     <# Keep key material out of the drop folder once it is installed. #>
     param($File)
@@ -1121,13 +1151,12 @@ function Move-ImportedPfx {
         return
     }
 
-    # Resolve BOTH sides the same way before comparing. Comparing $File.DirectoryName
-    # against a resolved DropFolder breaks as soon as one side carries an 8.3 short
-    # name (C:\Users\RUNNER~1\... on a build agent, or any path reached through one):
-    # the strings differ, the function returns, and the PFX silently stays in the drop
-    # folder with its private key - exactly what archiving is meant to prevent.
-    $dropDir = (Resolve-Path -LiteralPath $s.DropFolder      -ErrorAction SilentlyContinue).Path
-    $fileDir = (Resolve-Path -LiteralPath $File.DirectoryName -ErrorAction SilentlyContinue).Path
+    # Bring BOTH sides to the same long form before comparing - see Resolve-LongPath.
+    # Otherwise a short-named drop folder never matches the file's long directory, the
+    # function returns, and the PFX silently stays put with its private key - exactly
+    # what archiving is meant to prevent.
+    $dropDir = Resolve-LongPath $s.DropFolder
+    $fileDir = Resolve-LongPath $File.DirectoryName
     if (-not $dropDir -or -not $fileDir) {
         Write-Log "PFX not archived: cannot resolve '$($File.DirectoryName)' or '$($s.DropFolder)'." WARN
         return
