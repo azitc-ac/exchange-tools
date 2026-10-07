@@ -50,6 +50,20 @@ public class SmokeWin {
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, int msg, IntPtr w, IntPtr l);
+  // Nur Fenster MIT Titel: ein Werkzeug bringt oft unsichtbare Hilfsfenster mit, und
+  // deren Symbol sagt nichts ueber die Titelleiste des Hauptfensters.
+  public static IntPtr HandleForPid(uint target) {
+    IntPtr found = IntPtr.Zero;
+    EnumWindows((h, l) => {
+      uint pid; GetWindowThreadProcessId(h, out pid);
+      if (pid == target && IsWindowVisible(h)) {
+        var sb = new StringBuilder(300); GetWindowText(h, sb, 300);
+        if (sb.Length > 0) { found = h; return false; }
+      }
+      return true;
+    }, IntPtr.Zero);
+    return found; }
   public static List<string> ForPid(uint target) {
     var res = new List<string>();
     EnumWindows((h, l) => {
@@ -85,13 +99,28 @@ foreach ($w in $werkzeuge) {
     }
 
     $p = Start-Process -FilePath $exe -PassThru
-    $fenster = @(); $abgestuerzt = $false; $sek = 0
+    $fenster = @(); $abgestuerzt = $false; $sek = 0; $fensterHandle = [IntPtr]::Zero
     for ($i = 1; $i -le $TimeoutSekunden; $i++) {
         Start-Sleep -Seconds 1
         $p.Refresh()
         if ($p.HasExited) { $abgestuerzt = $true; $sek = $i; break }
         $fenster = @([SmokeWin]::ForPid([uint32]$p.Id))
-        if ($fenster.Count -gt 0) { $sek = $i; break }
+        if ($fenster.Count -gt 0) { $sek = $i; $fensterHandle = [SmokeWin]::HandleForPid([uint32]$p.Id); break }
+    }
+
+    # Symbolgroesse noch am LEBENDEN Fenster ermitteln - nach dem Beenden gibt es nichts
+    # mehr zu fragen, und WM_GETICON liefert dann stumm eine Null.
+    $iconGroesse = -1
+    if ($meta.Icon -and $fensterHandle -ne [IntPtr]::Zero -and -not $p.HasExited) {
+        # Das Symbol wird ueblicherweise im Shown-Ereignis gesetzt, also erst kurz nachdem
+        # das Fenster sichtbar wurde. Ohne diese Pause misst man zu frueh.
+        Start-Sleep -Milliseconds 1200
+        try {
+            Add-Type -AssemblyName System.Drawing -ErrorAction SilentlyContinue
+            $hIco = [SmokeWin]::SendMessage($fensterHandle, 0x7F, [IntPtr]0, [IntPtr]::Zero)   # WM_GETICON, ICON_SMALL
+            if ($hIco -ne [IntPtr]::Zero) { $iconGroesse = [System.Drawing.Icon]::FromHandle($hIco).Width }
+        }
+        catch { }
     }
     if (-not $p.HasExited) { $p.Kill(); $p.WaitForExit(5000) | Out-Null }
 
@@ -103,6 +132,15 @@ foreach ($w in $werkzeuge) {
     }
     else {
         $pass++; Write-Output ("  OK   {0,-22} Fenster nach {1}s: '{2}'" -f $w.Name, $sek, $fenster[0])
+
+        # Titelleisten-Symbol: Windows holt sich dafuer ICON_SMALL. Wer das Fenstersymbol
+        # ueber ExtractAssociatedIcon setzt, bekommt nur die 32er-Fassung und Windows
+        # rechnet sie herunter - das Symbol wirkt dann matschig. Hier faellt das auf.
+        if ($meta.Icon) {
+            if ($iconGroesse -lt 0) { $fail++; Write-Output ("  FEHL {0,-22} Fenster ohne kleines Symbol" -f $w.Name) }
+            elseif ($iconGroesse -le 16) { $pass++; Write-Output ("  OK   {0,-22} Titelleisten-Symbol {1}x{1}" -f $w.Name, $iconGroesse) }
+            else { $fail++; Write-Output ("  FEHL {0,-22} Titelleisten-Symbol ist {1}x{1} statt 16x16 - heruntergerechnet" -f $w.Name, $iconGroesse) }
+        }
     }
 }
 

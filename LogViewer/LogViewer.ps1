@@ -167,7 +167,7 @@ Add-Type -AssemblyName System.Drawing
 # ── Dateitypen ────────────────────────────────────────────────────────────────
 # Eintragen, Prüfen und Entfernen liegen hier zusammen; LogViewer-register.ps1 ruft nur noch
 # dieses Programm auf, damit es keine zweite Fassung derselben Logik gibt.
-$script:Version  = '3.1.0'
+$script:Version  = '3.1.1'
 $script:BlogUrl  = 'https://blog.zarenko.net'
 $script:ProgId   = 'LogViewer.LogFile'
 $script:StateKey = 'HKCU:\Software\LogViewer'
@@ -1032,11 +1032,34 @@ $form = New-Object System.Windows.Forms.Form
 $form.Text="$($script:T.WindowTitle)  -  $script:BlogUrl"; $form.Size=New-Object System.Drawing.Size(1200,740)
 $form.StartPosition='CenterScreen'; $form.MinimumSize=New-Object System.Drawing.Size(800,500)
 # Fenstersymbol: aus der eigenen EXE, beim Skriptstart aus LogViewer.ico daneben.
+# NICHT über ExtractAssociatedIcon: das liefert ausschliesslich die 32er-Variante, auch
+# wenn die Ressource 16 bis 256 Pixel enthaelt. Windows rechnet sie dann fuer die
+# Titelleiste auf 16 herunter, und das Symbol wirkt dort matschig. ExtractIconEx gibt
+# die grosse UND die kleine Fassung getrennt zurueck.
+if (-not ('Native.WinIcon' -as [type])) {
+    try {
+        Add-Type -Namespace Native -Name WinIcon -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern uint ExtractIconEx(string file, int index, out System.IntPtr large, out System.IntPtr small, uint count);
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern System.IntPtr SendMessage(System.IntPtr hWnd, int msg, System.IntPtr wParam, System.IntPtr lParam);
+'@ -ErrorAction Stop
+    } catch { }
+}
+$script:SmallIconHandle = [IntPtr]::Zero
 try {
     $selfPath = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
     if (([IO.Path]::GetFileNameWithoutExtension($selfPath)) -notin @('powershell', 'pwsh', 'powershell_ise')) {
-        $form.Icon = [System.Drawing.Icon]::ExtractAssociatedIcon($selfPath)
+        $big = [IntPtr]::Zero; $small = [IntPtr]::Zero
+        if (('Native.WinIcon' -as [type]) -and
+            ([Native.WinIcon]::ExtractIconEx($selfPath, 0, [ref]$big, [ref]$small, 1) -gt 0) -and
+            $big -ne [IntPtr]::Zero) {
+            $form.Icon = [System.Drawing.Icon]::FromHandle($big)
+            $script:SmallIconHandle = $small
+        }
+        else { $form.Icon = [System.Drawing.Icon]::ExtractAssociatedIcon($selfPath) }
     } else {
+        # Als Skript: die Datei daneben bringt alle Groessen von selbst mit.
         $icoPath = Join-Path (Split-Path $PSCommandPath -Parent) 'LogViewer.ico'
         if (Test-Path $icoPath) { $form.Icon = New-Object System.Drawing.Icon($icoPath) }
     }
@@ -1387,6 +1410,12 @@ function Invoke-FirstRunAssocPrompt {
 $resolved = $null
 if ($Path -and (Test-Path -LiteralPath $Path)) { $resolved = (Resolve-Path -LiteralPath $Path).Path }
 $form.Add_Shown({
+    # Das kleine Symbol erst jetzt nachreichen: WM_SETICON braucht ein Fensterhandle.
+    # $form.Icon allein setzt beide Groessen aus derselben Vorlage - die Titelleiste
+    # bekaeme dann die heruntergerechnete 32er statt der echten 16er Fassung.
+    if ($script:SmallIconHandle -ne [IntPtr]::Zero -and ('Native.WinIcon' -as [type])) {
+        try { [void][Native.WinIcon]::SendMessage($form.Handle, 0x80, [IntPtr]0, $script:SmallIconHandle) } catch { }
+    }
     if ($resolved) {
         if ($Mode -ne 'Auto') { $s.Mode=$Mode; $s.ManualMode=$true; Set-ModeButtons $Mode }
         Open-File $resolved
