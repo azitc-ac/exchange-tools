@@ -206,9 +206,23 @@ Write-Host "`n=== Import flow ===" -ForegroundColor Cyan
 Reset-Case; $script:Deployed = $false; $script:SkipInstall = $false
 Check 'not deployed -> installs once, remembers the subject, archives the PFX, mails the result' {
     Invoke-PfxImport
-    $script:Calls.Install -eq 1 -and $script:Config.Pfx.Subject -eq 'CN=acmepfxtest.example.net' `
-        -and $script:Calls.Mail -eq 1 -and $script:LastMailSubject -match 'acmepfxtest.example.net' `
-        -and (-not (Test-Path "$homeDir\pfx\good-chain.pfx")) -and @(Get-ChildItem "$homeDir\pfx\archive" -Filter *.pfx).Count -ge 1
+    # Each part is named: a bare -and chain only ever says "false", which is useless
+    # when the case passes locally but fails on a build agent.
+    $parts = [ordered]@{
+        'installed once'   = ($script:Calls.Install -eq 1)
+        'subject stored'   = ($script:Config.Pfx.Subject -eq 'CN=acmepfxtest.example.net')
+        'mail sent once'   = ($script:Calls.Mail -eq 1)
+        'mail subject ok'  = ($script:LastMailSubject -match 'acmepfxtest.example.net')
+        'source pfx moved' = (-not (Test-Path "$homeDir\pfx\good-chain.pfx"))
+        'pfx archived'     = (@(Get-ChildItem "$homeDir\pfx\archive" -Filter *.pfx -ErrorAction SilentlyContinue).Count -ge 1)
+    }
+    $bad = @($parts.Keys | Where-Object { -not $parts[$_] })
+    if ($bad) {
+        Write-Host ("      failing parts: " + ($bad -join ', ')) -ForegroundColor Yellow
+        Write-Host ("      Install=$($script:Calls.Install) Mail=$($script:Calls.Mail) " +
+                    "Subject='$($script:Config.Pfx.Subject)' MailSubject='$($script:LastMailSubject)'") -ForegroundColor Yellow
+    }
+    $bad.Count -eq 0
 }
 Reset-Case; $script:Deployed = $true
 Check 'already deployed -> no install (no iisreset), but the expiry check runs' {
