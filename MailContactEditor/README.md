@@ -32,6 +32,27 @@ angemeldet.
   „✔ Kontakt … gespeichert“ angezeigt. Fehler erscheinen als Meldungsfenster, der Dialog bleibt
   dann offen
 
+**EmailAddresses direkt bearbeiten**
+
+Der Bearbeiten-Dialog zeigt die vollständige Adress-Sammlung des Kontakts mit ihrem Typ und
+lässt sie bearbeiten:
+
+- **Hinzufügen / Ändern / Entfernen** für SMTP-Adressen. Format und Dubletten werden schon bei
+  der Eingabe geprüft, nicht erst beim Speichern
+- **Als primär** macht die gewählte Adresse zur primären (groß geschriebenes `SMTP:`); die
+  bisherige wird automatisch zur sekundären. Es gibt damit immer genau eine primäre
+- Das Feld *PrimarySmtpAddress* und die Liste halten sich gegenseitig aktuell – es kann keinen
+  Zustand geben, in dem beide etwas Verschiedenes behaupten. Trägt man oben eine Adresse ein,
+  die schon als sekundäre existiert, wird sie befördert statt doppelt angelegt
+- **`X500:`- und `SIP:`-Einträge** werden grau angezeigt und sind gegen Ändern und Entfernen
+  gesperrt. Sie stammen meist aus Migrationen; wer sie löscht, bricht Antworten auf alte
+  Nachrichten und die Teams-Zuordnung. Beim Speichern gehen sie unverändert mit
+- Die primäre Adresse lässt sich nicht ersatzlos entfernen – erst eine andere zur primären
+  machen, dann die alte löschen
+
+Gespeichert wird die vollständige Sammlung in einem Zug (`Set-MailContact -EmailAddresses`).
+Das setzt zugleich die primäre Adresse, weshalb dafür kein `-WindowsEmailAddress` mehr nötig ist.
+
 ## Hintergrund
 
 `Set-MailContact` kennt in Exchange Online keinen Parameter `-PrimarySmtpAddress`. Das Skript setzt

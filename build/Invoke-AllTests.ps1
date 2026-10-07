@@ -42,6 +42,19 @@ $pruefungen = @(
     @{ Name = 'EXE-Start';     Skript = 'build\Test-ExeSmoke.ps1';     Build = $true  }
 )
 
+# Werkzeuge duerfen eigene Tests mitbringen: <Werkzeug>\tests\Test-*.ps1 wird
+# automatisch mitgelaufen, ohne dass diese Liste gepflegt werden muss.
+foreach ($eigen in (Get-ChildItem $Repo -Directory |
+                    Where-Object { $_.Name -notmatch '^\.|^build$|^dist$' } |
+                    ForEach-Object { Get-ChildItem (Join-Path $_.FullName 'tests') -Filter 'Test-*.ps1' -File -ErrorAction SilentlyContinue } |
+                    Sort-Object FullName)) {
+    $pruefungen += @{
+        Name   = "$($eigen.Directory.Parent.Name)/$($eigen.BaseName)"
+        Skript = $eigen.FullName.Substring($Repo.Length).TrimStart('\')
+        Build  = $false
+    }
+}
+
 $ergebnis = @()
 foreach ($p in $pruefungen) {
     if ($p.Build -and $SkipBuild) {

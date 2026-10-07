@@ -4,7 +4,7 @@
 )
 
 # Einzige Stelle für die Versionsnummer; Build und Release-Tag lesen sie hier aus.
-$script:Version = '1.0.0'
+$script:Version = '1.1.0'
 
 # Voraussetzungen und Anmeldung. Der Block zwischen den Markern stammt aus
 # build/Prolog.Exo.ps1 und wird von build/Sync-Prolog.ps1 gepflegt - nicht von Hand ändern.
@@ -107,6 +107,37 @@ function ConvertTo-PlainAddress($address) {
     "$address" -replace '^smtp:', ''
 }
 
+# --- EmailAddresses: Zerlegen und Zusammensetzen ---------------------------------
+# Eine Proxy-Adresse ist "<Praefix>:<Wert>". Gross geschriebenes SMTP markiert die
+# primaere Adresse; davon darf es genau eine geben. X500 und SIP stammen meist aus
+# Migrationen - sie gehoeren nicht angefasst, sonst brechen alte Antwortadressen
+# und die Lync/Teams-Zuordnung.
+function ConvertFrom-ProxyAddress([string]$Proxy) {
+    $i = $Proxy.IndexOf(':')
+    if ($i -lt 1) {
+        # Ohne Praefix behandelt Exchange den Wert als sekundaere SMTP-Adresse.
+        return [pscustomobject]@{ Prefix = 'smtp'; Address = $Proxy; IsPrimary = $false; IsSmtp = $true }
+    }
+    $p = $Proxy.Substring(0, $i)
+    $a = $Proxy.Substring($i + 1)
+    [pscustomobject]@{
+        Prefix    = $p
+        Address   = $a
+        IsPrimary = ($p -ceq 'SMTP')
+        IsSmtp    = ($p -ieq 'smtp')
+    }
+}
+
+function ConvertTo-ProxyAddress($Entry) {
+    if ($Entry.IsSmtp) { "$(if ($Entry.IsPrimary) { 'SMTP' } else { 'smtp' }):$($Entry.Address)" }
+    else               { "$($Entry.Prefix):$($Entry.Address)" }
+}
+
+function Test-SmtpAddress([string]$Address) {
+    if ([string]::IsNullOrWhiteSpace($Address)) { return $false }
+    try { $null = [System.Net.Mail.MailAddress]::new($Address); $true } catch { $false }
+}
+
 function Set-ContactRow([System.Data.DataRow]$Row, $Contact) {
     $Row['Name']                 = $Contact.Name
     $Row['Alias']                = $Contact.Alias
@@ -119,11 +150,83 @@ function ConvertTo-LikeLiteral([string]$Text) {
     $Text -replace '([\[\]\*%])', '[$1]' -replace "'", "''"
 }
 
+#region Adress-Eingabe
+# Kleiner Prompt für Hinzufügen und Ändern einer SMTP-Adresse. Prüft schon hier,
+# damit eine unbrauchbare Eingabe gar nicht erst in die Liste gelangt.
+function Show-AddressPrompt {
+    param([string]$Title, [string]$Value = '', [string[]]$Vorhanden = @())
+
+    $dlg = New-Object System.Windows.Forms.Form -Property @{
+        Text            = $Title
+        ClientSize      = New-Object System.Drawing.Size(430, 108)
+        StartPosition   = 'CenterParent'
+        FormBorderStyle = 'FixedDialog'
+        MaximizeBox     = $false
+        MinimizeBox     = $false
+        Font            = $font
+        AutoScaleMode   = 'Font'
+    }
+    $dlg.Controls.Add((New-Object System.Windows.Forms.Label -Property @{
+                Text = 'SMTP-Adresse:'; Location = New-Object System.Drawing.Point(12, 18); AutoSize = $true }))
+    $tb = New-Object System.Windows.Forms.TextBox -Property @{
+        Text = $Value; Location = New-Object System.Drawing.Point(110, 15); Width = 308 }
+    $dlg.Controls.Add($tb)
+
+    $lblHint = New-Object System.Windows.Forms.Label -Property @{
+        Location = New-Object System.Drawing.Point(110, 44); AutoSize = $true
+        ForeColor = [System.Drawing.Color]::Firebrick }
+    $dlg.Controls.Add($lblHint)
+
+    $ok = New-Object System.Windows.Forms.Button -Property @{
+        Text = 'OK'; Location = New-Object System.Drawing.Point(243, 70); Width = 85 }
+    $ab = New-Object System.Windows.Forms.Button -Property @{
+        Text = 'Abbrechen'; Location = New-Object System.Drawing.Point(333, 70); Width = 85; DialogResult = 'Cancel' }
+    $dlg.Controls.AddRange(@($ok, $ab))
+    $dlg.AcceptButton = $ok
+    $dlg.CancelButton = $ab
+
+    $ergebnis = $null
+    $ok.Add_Click({
+            $wert = $tb.Text.Trim()
+            if (-not (Test-SmtpAddress $wert)) { $lblHint.Text = 'Keine gültige SMTP-Adresse.'; return }
+            # Gross-/Kleinschreibung ist bei Adressen unerheblich - Dubletten lehnt Exchange ab.
+            if ($Vorhanden -contains $wert.ToLowerInvariant()) { $lblHint.Text = 'Diese Adresse ist bereits eingetragen.'; return }
+            $script:promptErgebnis = $wert
+            $dlg.DialogResult = 'OK'
+        })
+
+    # Groesse aus dem Inhalt, gleicher Grund wie im Bearbeiten-Dialog.
+    $rand   = 12
+    $rechts = ($dlg.Controls | ForEach-Object { $_.Right }  | Measure-Object -Maximum).Maximum
+    $unten  = ($dlg.Controls | ForEach-Object { $_.Bottom } | Measure-Object -Maximum).Maximum
+    $dlg.ClientSize = New-Object System.Drawing.Size(($rechts + $rand), ($unten + $rand))
+
+    $script:promptErgebnis = $null
+    $r = $dlg.ShowDialog()
+    $ergebnis = $script:promptErgebnis
+    $dlg.Dispose()
+    if ($r -eq 'OK') { $ergebnis } else { $null }
+}
+#endregion
+
 #region Bearbeiten-Dialog
 function Show-ContactEditDialog([System.Data.DataRow]$Row) {
+    # Frisch lesen statt aus der Tabelle: die Adressliste kann sich seit dem Laden
+    # geändert haben, und sie ist hier die Arbeitsgrundlage.
+    try { $kontakt = Get-MailContact -Identity $Row['Guid'] -ErrorAction Stop }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show("Kontakt konnte nicht gelesen werden:`n`n$($_.Exception.Message)",
+            'Fehler', 'OK', 'Error') | Out-Null
+        return $false
+    }
+
+    # Arbeitskopie der Adressen; das Original wird erst beim Speichern angefasst.
+    $adressen = New-Object System.Collections.ArrayList
+    foreach ($p in $kontakt.EmailAddresses) { [void]$adressen.Add((ConvertFrom-ProxyAddress "$p")) }
+
     $form = New-Object System.Windows.Forms.Form -Property @{
         Text            = "Kontakt bearbeiten - $($Row['Name'])"
-        ClientSize      = New-Object System.Drawing.Size(520, 178)
+        ClientSize      = New-Object System.Drawing.Size(620, 466)
         StartPosition   = 'CenterParent'
         FormBorderStyle = 'FixedDialog'
         MaximizeBox     = $false
@@ -144,7 +247,7 @@ function Show-ContactEditDialog([System.Data.DataRow]$Row) {
             Text     = $Row[$f.Key]
             ReadOnly = $f.ReadOnly
             Location = New-Object System.Drawing.Point(160, $y)
-            Width    = 345
+            Width    = 448
         }
         $form.Controls.Add($tb)
         $fields[$f.Key] = $tb
@@ -158,49 +261,176 @@ function Show-ContactEditDialog([System.Data.DataRow]$Row) {
         AutoSize = $true
     }
     $form.Controls.Add($chkAddProxy)
-    $y += 28
+    $y += 30
+
+    $form.Controls.Add((New-Object System.Windows.Forms.Label -Property @{
+                Text = 'EmailAddresses:'; Location = New-Object System.Drawing.Point(12, $y); AutoSize = $true }))
+    $y += 23   # Labelhöhe 21 plus Luft; bei 20 ueberlappte die Liste das Label um 1 px
+
+    $lv = New-Object System.Windows.Forms.ListView -Property @{
+        Location      = New-Object System.Drawing.Point(12, $y)
+        Size          = New-Object System.Drawing.Size(596, 196)
+        View          = 'Details'
+        FullRowSelect = $true
+        MultiSelect   = $false
+        HideSelection = $false
+        GridLines     = $true
+    }
+    [void]$lv.Columns.Add('Typ', 70)
+    [void]$lv.Columns.Add('Adresse', 500)
+    $form.Controls.Add($lv)
+    $y += 204
+
+    $btnAdd     = New-Object System.Windows.Forms.Button -Property @{ Text = 'Hinzufügen'; Location = New-Object System.Drawing.Point(12, $y);  Width = 95 }
+    $btnEdit    = New-Object System.Windows.Forms.Button -Property @{ Text = 'Ändern';     Location = New-Object System.Drawing.Point(113, $y); Width = 95 }
+    $btnDel     = New-Object System.Windows.Forms.Button -Property @{ Text = 'Entfernen';  Location = New-Object System.Drawing.Point(214, $y); Width = 95 }
+    $btnPrimary = New-Object System.Windows.Forms.Button -Property @{ Text = 'Als primär'; Location = New-Object System.Drawing.Point(315, $y); Width = 105 }
+    $form.Controls.AddRange(@($btnAdd, $btnEdit, $btnDel, $btnPrimary))
+    $y += 34
+
+    # +2 statt +6: sonst sitzt das Label tiefer als die Schaltflaechen daneben und
+    # verschiebt den unteren Rand des Dialogs.
+    $lblInfo = New-Object System.Windows.Forms.Label -Property @{
+        Location = New-Object System.Drawing.Point(12, ($y + 2)); AutoSize = $true
+        ForeColor = [System.Drawing.SystemColors]::GrayText }
+    $form.Controls.Add($lblInfo)
 
     $btnSave = New-Object System.Windows.Forms.Button -Property @{
-        Text = 'Speichern'; Location = New-Object System.Drawing.Point(330, ($y + 8)); Width = 85 }
+        Text = 'Speichern'; Location = New-Object System.Drawing.Point(430, $y); Width = 85 }
     $btnCancel = New-Object System.Windows.Forms.Button -Property @{
-        Text = 'Abbrechen'; Location = New-Object System.Drawing.Point(420, ($y + 8)); Width = 85; DialogResult = 'Cancel' }
+        Text = 'Abbrechen'; Location = New-Object System.Drawing.Point(523, $y); Width = 85; DialogResult = 'Cancel' }
     $form.Controls.AddRange(@($btnSave, $btnCancel))
     $form.AcceptButton = $btnSave
     $form.CancelButton = $btnCancel
 
-    $btnSave.Add_Click({
-            $newPrimary  = $fields['PrimarySmtpAddress'].Text.Trim()
-            $newExternal = $fields['ExternalEmailAddress'].Text.Trim()
+    # --- Liste und Primärfeld halten sich gegenseitig aktuell ---------------------
+    function Update-AddressList {
+        $lv.BeginUpdate()
+        $lv.Items.Clear()
+        foreach ($e in $adressen) {
+            $typ = if ($e.IsSmtp) { if ($e.IsPrimary) { 'SMTP' } else { 'smtp' } } else { $e.Prefix }
+            $it = New-Object System.Windows.Forms.ListViewItem($typ)
+            [void]$it.SubItems.Add($e.Address)
+            $it.Tag = $e
+            if ($e.IsPrimary) { $it.Font = New-Object System.Drawing.Font($font, [System.Drawing.FontStyle]::Bold) }
+            if (-not $e.IsSmtp) { $it.ForeColor = [System.Drawing.SystemColors]::GrayText }
+            [void]$lv.Items.Add($it)
+        }
+        $lv.EndUpdate()
 
-            foreach ($addr in $newPrimary, $newExternal) {
-                try { $null = [System.Net.Mail.MailAddress]::new($addr) }
-                catch {
-                    [System.Windows.Forms.MessageBox]::Show("Ungültige Adresse: '$addr'", 'Fehler', 'OK', 'Warning') | Out-Null
-                    return
-                }
+        $prim = @($adressen | Where-Object { $_.IsPrimary }) | Select-Object -First 1
+        if ($prim) { $fields['PrimarySmtpAddress'].Text = $prim.Address }
+
+        $andere = @($adressen | Where-Object { -not $_.IsSmtp }).Count
+        $lblInfo.Text = "$($adressen.Count) Adressen" + $(if ($andere) { ", davon $andere nicht bearbeitbar (X500/SIP)" } else { '' })
+    }
+
+    function Get-SelectedEntry {
+        if ($lv.SelectedItems.Count -eq 0) { return $null }
+        $lv.SelectedItems[0].Tag
+    }
+
+    function Update-ButtonState {
+        $e = Get-SelectedEntry
+        $istSmtp = ($null -ne $e -and $e.IsSmtp)
+        $btnEdit.Enabled    = $istSmtp
+        $btnDel.Enabled     = ($istSmtp -and -not $e.IsPrimary)   # die primäre nie ersatzlos entfernen
+        $btnPrimary.Enabled = ($istSmtp -and -not $e.IsPrimary)
+    }
+
+    $lv.Add_SelectedIndexChanged({ Update-ButtonState })
+
+    $btnAdd.Add_Click({
+            $vorhanden = @($adressen | ForEach-Object { $_.Address.ToLowerInvariant() })
+            $neu = Show-AddressPrompt -Title 'Adresse hinzufügen' -Vorhanden $vorhanden
+            if (-not $neu) { return }
+            [void]$adressen.Add([pscustomobject]@{ Prefix = 'smtp'; Address = $neu; IsPrimary = $false; IsSmtp = $true })
+            Update-AddressList; Update-ButtonState
+        })
+
+    $btnEdit.Add_Click({
+            $e = Get-SelectedEntry
+            if (-not $e -or -not $e.IsSmtp) { return }
+            $vorhanden = @($adressen | Where-Object { $_ -ne $e } | ForEach-Object { $_.Address.ToLowerInvariant() })
+            $neu = Show-AddressPrompt -Title 'Adresse ändern' -Value $e.Address -Vorhanden $vorhanden
+            if (-not $neu) { return }
+            $e.Address = $neu
+            Update-AddressList; Update-ButtonState
+        })
+
+    $btnDel.Add_Click({
+            $e = Get-SelectedEntry
+            if (-not $e -or -not $e.IsSmtp -or $e.IsPrimary) { return }
+            $adressen.Remove($e)
+            Update-AddressList; Update-ButtonState
+        })
+
+    $btnPrimary.Add_Click({
+            $e = Get-SelectedEntry
+            if (-not $e -or -not $e.IsSmtp) { return }
+            foreach ($a in $adressen) { if ($a.IsSmtp) { $a.IsPrimary = $false } }
+            $e.IsPrimary = $true
+            Update-AddressList; Update-ButtonState
+        })
+
+    # Primärfeld geändert -> die primäre Adresse in der Liste zieht nach.
+    $fields['PrimarySmtpAddress'].Add_Leave({
+            $wert = $fields['PrimarySmtpAddress'].Text.Trim()
+            if (-not (Test-SmtpAddress $wert)) { return }
+            $prim = @($adressen | Where-Object { $_.IsPrimary }) | Select-Object -First 1
+            if ($prim -and $prim.Address -ieq $wert) { return }
+            # Steht der Wert schon als sekundäre Adresse drin, wird sie befördert
+            # statt ein zweites Mal angelegt.
+            $treffer = @($adressen | Where-Object { $_.IsSmtp -and $_.Address -ieq $wert }) | Select-Object -First 1
+            foreach ($a in $adressen) { if ($a.IsSmtp) { $a.IsPrimary = $false } }
+            if ($treffer) { $treffer.IsPrimary = $true }
+            else { [void]$adressen.Add([pscustomobject]@{ Prefix = 'SMTP'; Address = $wert; IsPrimary = $true; IsSmtp = $true }) }
+            Update-AddressList; Update-ButtonState
+        })
+
+    # Externe Adresse geändert -> auf Wunsch gleich sichtbar in die Liste, statt
+    # sie nach dem Speichern unbemerkt nachzutragen.
+    $fields['ExternalEmailAddress'].Add_Leave({
+            if (-not $chkAddProxy.Checked) { return }
+            $wert = $fields['ExternalEmailAddress'].Text.Trim()
+            if (-not (Test-SmtpAddress $wert)) { return }
+            if (@($adressen | Where-Object { $_.IsSmtp -and $_.Address -ieq $wert }).Count) { return }
+            [void]$adressen.Add([pscustomobject]@{ Prefix = 'smtp'; Address = $wert; IsPrimary = $false; IsSmtp = $true })
+            Update-AddressList; Update-ButtonState
+        })
+
+    $btnSave.Add_Click({
+            $newExternal = $fields['ExternalEmailAddress'].Text.Trim()
+            if (-not (Test-SmtpAddress $newExternal)) {
+                [System.Windows.Forms.MessageBox]::Show("Ungültige Adresse: '$newExternal'", 'Fehler', 'OK', 'Warning') | Out-Null
+                return
+            }
+            $prim = @($adressen | Where-Object { $_.IsPrimary })
+            if ($prim.Count -ne 1) {
+                [System.Windows.Forms.MessageBox]::Show(
+                    "Es muss genau eine primäre Adresse geben, gefunden: $($prim.Count).", 'Fehler', 'OK', 'Warning') | Out-Null
+                return
             }
 
-            $primaryChanged  = $newPrimary  -cne $Row['PrimarySmtpAddress']
-            $externalChanged = $newExternal -cne $Row['ExternalEmailAddress']
-            if (-not ($primaryChanged -or $externalChanged)) { $form.DialogResult = 'Cancel'; return }
+            $neueListe = @($adressen | ForEach-Object { ConvertTo-ProxyAddress $_ })
+            $alteListe = @($kontakt.EmailAddresses | ForEach-Object { "$_" })
+            $adressenGeaendert = @(Compare-Object $alteListe $neueListe -CaseSensitive).Count -gt 0
+            $externalChanged   = $newExternal -cne (ConvertTo-PlainAddress $kontakt.ExternalEmailAddress)
 
-            # EXO kennt bei Set-MailContact kein -PrimarySmtpAddress; WindowsEmailAddress setzt sie mit
+            if (-not ($adressenGeaendert -or $externalChanged)) { $form.DialogResult = 'Cancel'; return }
+
+            # EXO kennt bei Set-MailContact kein -PrimarySmtpAddress. Die vollständige
+            # Sammlung mit genau einem gross geschriebenen SMTP: setzt sie mit - und
+            # bildet zugleich Hinzufügen, Ändern und Entfernen in einem Schritt ab.
             $params = @{ Identity = $Row['Guid']; ErrorAction = 'Stop' }
-            if ($externalChanged) { $params.ExternalEmailAddress = $newExternal }
-            if ($primaryChanged)  { $params.WindowsEmailAddress  = $newPrimary }
+            if ($externalChanged)   { $params.ExternalEmailAddress = $newExternal }
+            if ($adressenGeaendert) { $params.EmailAddresses       = $neueListe }
 
             $form.Cursor = 'WaitCursor'
             try {
                 Set-MailContact @params
                 # neu einlesen, da Exchange ggf. abhängige Werte mitändert
                 $current = Get-MailContact -Identity $Row['Guid'] -ErrorAction Stop
-
-                if ($externalChanged -and $chkAddProxy.Checked -and
-                    -not ($current.EmailAddresses | Where-Object { "$_" -eq "smtp:$newExternal" })) {
-                    Set-MailContact -Identity $Row['Guid'] -EmailAddresses @{ Add = "smtp:$newExternal" } -ErrorAction Stop
-                    $current = Get-MailContact -Identity $Row['Guid'] -ErrorAction Stop
-                }
-
                 Set-ContactRow $Row $current
                 $form.DialogResult = 'OK'
             }
@@ -209,6 +439,18 @@ function Show-ContactEditDialog([System.Data.DataRow]$Row) {
             }
             finally { $form.Cursor = 'Default' }
         })
+
+    # Fenstergroesse aus dem Inhalt ableiten statt sie zu raten: mit
+    # AutoScaleMode='Font' skaliert WinForms die Form, nicht aber fest
+    # positionierte Controls - eine gesetzte ClientSize liess je nach
+    # Bildschirmskalierung einen breiten leeren Streifen rechts und unten stehen.
+    # So bleibt ringsum derselbe Rand, unabhaengig von DPI und Schriftgroesse.
+    $rand   = 12
+    $rechts = ($form.Controls | ForEach-Object { $_.Right }  | Measure-Object -Maximum).Maximum
+    $unten  = ($form.Controls | ForEach-Object { $_.Bottom } | Measure-Object -Maximum).Maximum
+    $form.ClientSize = New-Object System.Drawing.Size(($rechts + $rand), ($unten + $rand))
+
+    $form.Add_Shown({ Update-AddressList; Update-ButtonState })
 
     $result = $form.ShowDialog()
     $form.Dispose()
