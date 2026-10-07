@@ -1,4 +1,4 @@
-# exchange-tools
+﻿# exchange-tools
 
 Werkzeuge für den Betrieb von Exchange – on-premises und Exchange Online. Ein Ordner je
 Werkzeug, jeder für sich lauffähig – es gibt keine gemeinsame Laufzeit und keine Installation.
@@ -17,6 +17,7 @@ Werkzeug, jeder für sich lauffähig – es gibt keine gemeinsame Laufzeit und k
 | [ImportExchangePfx](ImportExchangePfx/) | PFX-Import | Kleines Hilfsskript: PFX auswählen und auf dem lokalen Server importieren |
 | [EopMdoHardening](EopMdoHardening/) | EOP- und Defender-Assessment | 120 Prüfpunkte für Exchange Online Protection und Defender for Office 365: Ist-Zustand auslesen, Abweichungen begründen, Baseline setzen |
 | [MailContactEditor](MailContactEditor/) | E-Mail-Kontakte (Exchange Online) | Kontakt aus filterbarer Liste wählen, primäre und externe Adresse ändern |
+| [TestMailboxFiller](TestMailboxFiller/) | Testdaten im Postfach | Postfach mit rückdatierten Nachrichten füllen – für Retention Policies, OST-Zwischenspeicherung und Kontingente; on-premises über EWS, Exchange Online über Graph |
 
 ## Voraussetzungen
 
@@ -25,7 +26,9 @@ Exchange-Verwaltungsshell auf dem Server, auf dem sie laufen. `EopMdoHardening` 
 `MailContactEditor` arbeiten gegen Exchange Online und erwarten das Modul
 `ExchangeOnlineManagement` **ab Version 3.6.0**. `LogViewer`, `ExchangeLogAnalyzer` und
 `ExchangeTester` sind davon unabhängig – der Tester läuft bewusst auch auf einem
-Arbeitsplatzrechner, weil er die Sicht des Clients einnimmt.
+Arbeitsplatzrechner, weil er die Sicht des Clients einnimmt. `TestMailboxFiller` nutzt weder
+Verwaltungsshell noch Modul: on-premises arbeitet er über EWS, gegen Exchange Online über
+Microsoft Graph.
 
 Die Werkzeuge prüfen das selbst, statt mitten in der Arbeit mit „Begriff wird nicht erkannt"
 abzubrechen: PowerShell-Ausgabe, TLS 1.2, Modulversion, bestehende Anmeldung – und ob die
