@@ -56,6 +56,8 @@ $script:TextTable = @{
         ModeLabel      = 'Modus:'
         ModeDateTime   = 'Datum/Text'
         AutoScroll     = 'Auto-Scroll'
+        MarkLevels     = 'Warnungen/Fehler markieren'
+        MarkLevelsTip  = 'Färbt Zeilen, die WARN/WARNUNG (gelb) oder ERROR/FEHLER/FATAL (rot) enthalten. Im CMTrace-Format wird ohnehin nach der Typspalte gefärbt.'
         SearchLabel    = 'Suchen:'
         SearchNext     = 'Weiter ▶'
         FilterLabel    = 'Filter:'
@@ -108,6 +110,8 @@ Hinweis: Welches Programm beim Doppelklick startet, entscheidet Windows selbst -
         ModeLabel      = 'Mode:'
         ModeDateTime   = 'Date/Text'
         AutoScroll     = 'Auto-scroll'
+        MarkLevels     = 'Mark warnings/errors'
+        MarkLevelsTip  = 'Colours lines containing WARN/WARNING (yellow) or ERROR/FATAL (red). CMTrace files are coloured by their type column anyway.'
         SearchLabel    = 'Find:'
         SearchNext     = 'Next ▶'
         FilterLabel    = 'Filter:'
@@ -163,7 +167,7 @@ Add-Type -AssemblyName System.Drawing
 # ── Dateitypen ────────────────────────────────────────────────────────────────
 # Eintragen, Prüfen und Entfernen liegen hier zusammen; LogViewer-register.ps1 ruft nur noch
 # dieses Programm auf, damit es keine zweite Fassung derselben Logik gibt.
-$script:Version  = '3.0.1'
+$script:Version  = '3.1.0'
 $script:BlogUrl  = 'https://blog.zarenko.net'
 $script:ProgId   = 'LogViewer.LogFile'
 $script:StateKey = 'HKCU:\Software\LogViewer'
@@ -626,6 +630,7 @@ $s = [PSCustomObject]@{
 # Direkt gehaltene Referenz auf die gerade angezeigte Liste: CellValueNeeded feuert pro Zelle,
 # ein Funktionsaufruf an dieser Stelle kostet spürbar Zeit.
 $script:CurrentRows = $s.VirtualRows
+if ($null -ne $script:LevelCache) { $script:LevelCache.Clear() }
 
 function Set-GridRowCount {
     <#
@@ -646,6 +651,9 @@ function Set-CurrentRows {
     # nachgeladene Zeilen nie zu sehen. Deshalb zwei getrennte Zuweisungen.
     if ($s.FilterActive) { $script:CurrentRows = $s.FilteredRows }
     else                 { $script:CurrentRows = $s.VirtualRows }
+    # Nach Filtern oder Moduswechsel zeigt derselbe Zeilenindex auf eine andere Zeile -
+    # ein stehengebliebener Puffer würde die Farben verschieben.
+    if ($null -ne $script:LevelCache) { $script:LevelCache.Clear() }
 }
 # Aus demselben Grund gibt es keine Get-Rows-Funktion mehr: Ein Rückgabewert würde bei jedem
 # Aufruf die komplette Liste kopieren. Überall wird direkt $script:CurrentRows verwendet.
@@ -1052,6 +1060,11 @@ $btnCsv.Checked=$true
 $autoScrollCheck=New-Object System.Windows.Forms.CheckBox; $autoScrollCheck.Text=$script:T.AutoScroll
 $autoScrollCheck.Checked=$true; $autoScrollCheck.AutoSize=$true
 [void]$tools.Items.Add((New-Object System.Windows.Forms.ToolStripControlHost $autoScrollCheck))
+$markCheck=New-Object System.Windows.Forms.CheckBox; $markCheck.Text=$script:T.MarkLevels
+$markCheck.Checked=$false; $markCheck.AutoSize=$true
+$markToolTip=New-Object System.Windows.Forms.ToolTip
+$markToolTip.SetToolTip($markCheck, $script:T.MarkLevelsTip)
+[void]$tools.Items.Add((New-Object System.Windows.Forms.ToolStripControlHost $markCheck))
 [void]$tools.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 $btnAbout=New-Object System.Windows.Forms.ToolStripButton
 $btnAbout.Text=$script:T.About; $btnAbout.DisplayStyle='Text'
@@ -1150,22 +1163,61 @@ $grid.Add_CellValueNeeded({
     }
 })
 
+# Dieselben Farben wie die CMTrace-Typspalte - eine gelbe und eine rote Zeile sollen in
+# jedem Format gleich aussehen.
+$script:ColWarn  = [System.Drawing.Color]::FromArgb(255,248,200)
+$script:ColError = [System.Drawing.Color]::FromArgb(255,180,180)
+
+# Formate ohne Typspalte tragen die Schwere im Text: "[ERROR]", "*ERROR*", "WARN".
+# Wortgrenzen, damit "Terrorliste" oder "Warner" nicht einfärben; \*ERROR\* extra, weil
+# der HCW seine Fehler so markiert und dort keine Wortgrenze steht.
+$script:RxError = [regex]::new('\*ERROR\*|\b(ERROR|FEHLER|FATAL|CRITICAL|SEVERE)\b',
+                               [System.Text.RegularExpressions.RegexOptions]'IgnoreCase, Compiled')
+$script:RxWarn  = [regex]::new('\b(WARN|WARNING|WARNUNG)\b',
+                               [System.Text.RegularExpressions.RegexOptions]'IgnoreCase, Compiled')
+# CellFormatting feuert je ZELLE. Ohne diesen Puffer würde die Zeile für jede Spalte neu
+# zusammengesetzt und durchsucht - bei breiten CSV-Dateien merkt man das beim Scrollen.
+$script:LevelCache = @{}
+
 $grid.Add_CellFormatting({
     # ACHTUNG: switch setzt $_ auf den geprüften Wert. Das Ereignisargument muss deshalb vorher
     # festgehalten werden - sonst zeigt $_ im switch-Zweig auf die Typnummer und der Zugriff auf
     # CellStyle schlägt fehl (genau daran scheiterte die Einfärbung bisher unbemerkt).
     $e = $_
-    if ($s.Mode -ne 'CMTrace') { return }
     $r = $e.RowIndex
     if ($r -lt 0) { return }
     $rows = $script:CurrentRows
     if ($r -ge $rows.Count) { return }
     $row = $rows[$r]
-    if ($row.Length -lt 7) { return }
-    switch ($row[6]) {
-        '2' { $e.CellStyle.BackColor = [System.Drawing.Color]::FromArgb(255,248,200) }
-        '3' { $e.CellStyle.BackColor = [System.Drawing.Color]::FromArgb(255,180,180) }
+
+    if ($s.Mode -eq 'CMTrace') {
+        if ($row.Length -lt 7) { return }
+        switch ($row[6]) {
+            '2' { $e.CellStyle.BackColor = $script:ColWarn }
+            '3' { $e.CellStyle.BackColor = $script:ColError }
+        }
+        return
     }
+
+    if (-not $markCheck.Checked) { return }
+    if ($script:LevelCache.ContainsKey($r)) { $lvl = $script:LevelCache[$r] }
+    else {
+        $text = [string]::Join(' ', $row)
+        $lvl = if ($script:RxError.IsMatch($text)) { 3 }
+               elseif ($script:RxWarn.IsMatch($text)) { 2 }
+               else { 0 }
+        $script:LevelCache[$r] = $lvl
+    }
+    switch ($lvl) {
+        3 { $e.CellStyle.BackColor = $script:ColError }
+        2 { $e.CellStyle.BackColor = $script:ColWarn }
+    }
+})
+
+$markCheck.Add_CheckedChanged({
+    # Der Puffer gilt nur für den gerade angezeigten Satz Zeilen.
+    $script:LevelCache.Clear()
+    $grid.Invalidate()
 })
 
 $grid.Add_SelectionChanged({ Update-Detail })

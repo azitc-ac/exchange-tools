@@ -40,6 +40,25 @@ powershell.exe -STA -ExecutionPolicy Bypass -File .\LogViewer.ps1 -Path "D:\Logs
   geschätzter Restzeit und Abbrechen.
 - **Zweisprachig** (Deutsch/Englisch), Umschaltung über `-Language`.
 
+## Warnungen und Fehler markieren
+
+Im CMTrace-Format färbt der Betrachter Zeilen anhand der Typspalte: gelb für Warnungen, rot für
+Fehler. Andere Protokolle haben keine solche Spalte – dort tragen die Zeilen ihre Schwere im Text.
+
+Die Option **Warnungen/Fehler markieren** in der Werkzeugleiste färbt diese Zeilen in denselben
+Farben:
+
+| Farbe | Erkannt an |
+|---|---|
+| rot | `ERROR`, `FEHLER`, `FATAL`, `CRITICAL`, `SEVERE` – dazu `*ERROR*`, wie der Hybrid Configuration Wizard seine Fehler schreibt |
+| gelb | `WARN`, `WARNING`, `WARNUNG` |
+
+Gesucht wird ohne Rücksicht auf Groß- und Kleinschreibung, aber an Wortgrenzen – `Terrorliste`,
+`Warner` oder `errorhandling.dll` färben also nicht. Enthält eine Zeile beides, gewinnt Rot.
+
+Die Option ist beim Start aus und wirkt nur in den Formaten ohne Typspalte; CMTrace-Dateien
+behalten ihre Färbung unabhängig davon.
+
 ## Verhalten bei großen Dateien
 
 Das Lesen und Zerlegen erledigt ein eingebetteter .NET-Kern, nicht PowerShell. Gemessen auf einem
