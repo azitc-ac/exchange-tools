@@ -68,11 +68,15 @@ behauptet.
 .\build\Invoke-AllTests.ps1 -SkipBuild # ohne EXE-Bau, falls ps2exe fehlt
 ```
 
-Vier Prüfungen hinter einem Einstiegspunkt: **Syntax** (jede `.ps1` wird geparst),
-**Encoding** (Umlaute nur mit UTF-8-BOM, sonst zeigt PowerShell 5.1 Mojibake),
-**Prolog** (die eingebetteten Prüfblöcke stimmen mit ihrer Quelle überein, die
-Mindestversion wird erzwungen) und **Release-Logik** (die Schritte aus
-`release.yml`, inklusive echtem EXE-Bau).
+Hinter einem Einstiegspunkt: **Syntax** (jede `.ps1` wird geparst), **Encoding**
+(Umlaute nur mit UTF-8-BOM, sonst zeigt PowerShell 5.1 Mojibake), **Prolog** (die
+eingebetteten Prüfblöcke stimmen mit ihrer Quelle überein, die Mindestversion wird
+erzwungen), **Release-Logik** (die Schritte aus `release.yml`, inklusive echtem
+EXE-Bau) und **EXE-Start** (jede gebaute EXE wird gestartet und muss ein Fenster
+zeigen – ein grüner Build beweist das nicht).
+
+Dazu laufen die Tests der einzelnen Werkzeuge mit: Was unter
+`<Werkzeug>\tests\Test-*.ps1` liegt, wird von selbst gefunden und ausgeführt.
 
 `.github/workflows/ci.yml` ruft bei jedem Push und jedem Pull Request genau dieses
 Skript auf – „lokal grün" und „CI grün" bedeuten damit dasselbe.
