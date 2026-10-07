@@ -1114,7 +1114,12 @@ function Move-ImportedPfx {
     <# Keep key material out of the drop folder once it is installed. #>
     param($File)
     $s = Get-PfxSettings
-    if (-not $s.ArchiveAfterImport) { return }
+    if (-not $s.ArchiveAfterImport) {
+        # Used to return in silence. If archiving is off, say so - otherwise a PFX
+        # that quietly stays in the drop folder looks like a bug somewhere else.
+        Write-Log "PFX not archived: ArchiveAfterImport is off." INFO
+        return
+    }
 
     # Resolve BOTH sides the same way before comparing. Comparing $File.DirectoryName
     # against a resolved DropFolder breaks as soon as one side carries an 8.3 short
