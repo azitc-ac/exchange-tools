@@ -1,4 +1,4 @@
-# LogViewer
+﻿# LogViewer
 
 Betrachter für Protokolldateien: CMTrace, CSV, W3C (IIS) und einfacher Text. Mit Live-
 Aktualisierung, Suche und Filter. Läuft eigenständig – keine Exchange-Shell, keine Installation.
@@ -89,9 +89,14 @@ startet, entscheidet Windows selbst; das lässt sich von außen nicht setzen und
 
 ## Selbst bauen
 
+Die `LogViewer.exe` steht in `.gitignore` und kommt deshalb **nicht per `git pull` mit**. Sie
+hängt fertig am [Release](https://github.com/azitc-ac/exchange-tools/releases) – oder man baut
+sie aus dem Wurzelverzeichnis des Repositorys selbst:
+
 ```powershell
-.\Build-LogViewerExe.ps1        # braucht ps2exe (Install-Module ps2exe -Scope CurrentUser)
-.\New-LogViewerIcon.ps1         # zeichnet LogViewer.ico neu
+.\build\Build-ToolExe.ps1 -Tool LogViewer   # braucht ps2exe (Install-Module ps2exe -Scope CurrentUser)
+.\build\Build-ToolExe.ps1                   # alle Werkzeuge des Repos auf einmal
+.\LogViewer\New-LogViewerIcon.ps1           # zeichnet LogViewer.ico neu
 ```
 
 Die Versionsnummer steht in `LogViewer.ps1` (`$script:Version`) und wird beim Bauen von dort

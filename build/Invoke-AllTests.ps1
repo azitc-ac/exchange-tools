@@ -36,6 +36,7 @@ $pruefungen = @(
     @{ Name = 'Syntax';        Skript = 'build\Test-Syntax.ps1';       Build = $false }
     @{ Name = 'Encoding';      Skript = 'build\Test-Encoding.ps1';     Build = $false }
     @{ Name = 'Prolog';        Skript = 'build\Test-Prolog.ps1';       Build = $false }
+    @{ Name = 'README';        Skript = 'build\Test-Readme.ps1';       Build = $false }
     @{ Name = 'Release-Logik'; Skript = 'build\Test-ReleaseLogic.ps1'; Build = $true  }
     # Startet die gebauten EXE-Dateien wirklich. Überspringt sich in der CI selbst,
     # weil ein Runner keine brauchbare Desktop-Sitzung hat.

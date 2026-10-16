@@ -44,10 +44,30 @@ lauffähig. `build\Test-Prolog.ps1` meldet jede abgewichene Kopie und jedes Werk
 ungeprüft aufruft; noch nicht umgestellte Altfälle stehen namentlich in
 `build\prolog-map.psd1`.
 
+## Selbst bauen
+
+Die EXE-Dateien stehen in `.gitignore` und kommen deshalb **nie per `git pull` mit** – nach
+einem Klon oder einem Pull liegen nur die Skripte da. Wer das Repo ohnehin geklont hat, baut
+alle Werkzeuge in einem Aufruf, statt jedes Release einzeln herunterzuladen:
+
+```powershell
+.\build\Build-ToolExe.ps1                        # alle Werkzeuge mit EXE
+.\build\Build-ToolExe.ps1 -Tool LogViewer        # nur eines
+.\build\Build-ToolExe.ps1 -Tool LogViewer,ExchangeTester
+```
+
+Jede EXE landet neben ihrem Hauptskript im Werkzeugordner. Einmalig nötig:
+`Install-Module ps2exe -Scope CurrentUser`. Ein fehlgeschlagenes Werkzeug bricht den Lauf
+nicht ab – am Ende steht eine Bilanz, welche gebaut wurden und welche nicht.
+
+Die Versionsnummer kommt immer aus `$script:Version` im Hauptskript, nicht aus einem zweiten
+Ort. Was ein Werkzeug vom anderen unterscheidet (Dateiname, Titel, Symbol, Administratorrechte),
+steht in seiner `release.psd1`.
+
 ## Releases
 
-Fertige EXE-Dateien liegen unter [Releases](../../releases), nicht im Repo. Ein Release je
-Werkzeug, ausgelöst durch einen Tag der Form `<Werkzeug>/v<Version>`:
+Wer nicht bauen will, findet fertige EXE-Dateien unter [Releases](../../releases). Ein Release
+je Werkzeug, ausgelöst durch einen Tag der Form `<Werkzeug>/v<Version>`:
 
 ```
 git tag MailContactEditor/v1.0.0
@@ -75,9 +95,10 @@ behauptet.
 Hinter einem Einstiegspunkt: **Syntax** (jede `.ps1` wird geparst), **Encoding**
 (Umlaute nur mit UTF-8-BOM, sonst zeigt PowerShell 5.1 Mojibake), **Prolog** (die
 eingebetteten Prüfblöcke stimmen mit ihrer Quelle überein, die Mindestversion wird
-erzwungen), **Release-Logik** (die Schritte aus `release.yml`, inklusive echtem
-EXE-Bau) und **EXE-Start** (jede gebaute EXE wird gestartet und muss ein Fenster
-zeigen – ein grüner Build beweist das nicht).
+erzwungen), **README** (keine README nennt eine `.ps1`, die es nicht gibt – und wer das
+Bauen beschreibt, sagt auch, woher die EXE sonst kommt), **Release-Logik** (die Schritte
+aus `release.yml`, inklusive echtem EXE-Bau) und **EXE-Start** (jede gebaute EXE wird
+gestartet und muss ein Fenster zeigen – ein grüner Build beweist das nicht).
 
 Dazu laufen die Tests der einzelnen Werkzeuge mit: Was unter
 `<Werkzeug>\tests\Test-*.ps1` liegt, wird von selbst gefunden und ausgeführt.

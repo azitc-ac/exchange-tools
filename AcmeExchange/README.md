@@ -1,4 +1,4 @@
-# Exchange ACME Certificate
+﻿# Exchange ACME Certificate
 
 Let's Encrypt certificates for **Exchange Server on-premises** (2016/2019/SE), validated via
 **DNS-01** with [Posh-ACME](https://github.com/rmbolger/Posh-ACME). **Azure DNS** is the
@@ -40,8 +40,13 @@ A fresh clone shows grey example placeholders as fill-in help; real defaults (`l
 14 warn days, IIS + SMTP, the task name and `03:00`) are already filled in.
 
 `Setup.exe` must stay in the bundle folder next to `Invoke-AcmeExchangeCert.ps1` and `lib\`.
-Rebuild it after changing the GUI with `build-exe.ps1` (needs the build-time module `ps2exe`;
-embeds `icon.ico`).
+It is not kept in the repository - the release workflow builds it and attaches it to the
+[release](https://github.com/azitc-ac/exchange-tools/releases). Rebuild it after changing the
+GUI from the repository root (needs the build-time module `ps2exe`; embeds `icon.ico`):
+
+```powershell
+.\build\Build-ToolExe.ps1 -Tool AcmeExchange
+```
 
 ## Command line (Invoke-AcmeExchangeCert.ps1)
 

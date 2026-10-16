@@ -16,13 +16,23 @@
     Die Version kommt immer aus $script:Version im Hauptskript - eine Quelle, kein
     zweiter Ort, an dem sie driften könnte.
 
+    Ohne -Tool werden ALLE Werkzeuge gebaut, die eine Exe ausliefern. Das ist der Weg nach
+    einem git pull: ein Aufruf, danach liegt neben jedem Hauptskript die passende EXE. Die
+    EXE-Dateien stehen in .gitignore und kommen deshalb nie per git mit.
+
+.EXAMPLE
+    .\build\Build-ToolExe.ps1
+    Baut alle Werkzeuge mit EXE. Ein Fehler bricht den Lauf nicht ab; am Ende steht eine Bilanz.
+
 .EXAMPLE
     .\build\Build-ToolExe.ps1 -Tool LogViewer
+    .\build\Build-ToolExe.ps1 -Tool LogViewer,ExchangeTester
     .\build\Build-ToolExe.ps1 -Tool LogViewer -Version 3.0.2
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][string]$Tool,
+    # Leer gelassen: alle Werkzeuge mit Exe-Eintrag in ihrer release.psd1.
+    [string[]]$Tool,
     [string]$Repo,
     [string]$Version
 )
@@ -37,13 +47,67 @@ if (-not $Repo) {
     $Repo = Split-Path $hier -Parent
 }
 
-$ordner = Join-Path $Repo $Tool
+# ------------------------------------------------------------------ Sammelbau
+# Ohne -Tool ruft sich das Skript je Werkzeug selbst auf. Ein Fehler darf den Lauf nicht
+# beenden: wer alles baut, will wissen WAS fehlschlug, nicht beim ersten Stolpern stehen.
+if (-not $Tool) {
+    $alle = @(Get-ChildItem $Repo -Directory |
+              Where-Object { $_.Name -notmatch '^\.|^build$|^dist$' } |
+              Where-Object { Test-Path (Join-Path $_.FullName 'release.psd1') } |
+              Where-Object { (Import-PowerShellDataFile (Join-Path $_.FullName 'release.psd1')).Exe } |
+              Sort-Object Name | Select-Object -ExpandProperty Name)
+
+    if (-not $alle) { Write-Output 'Kein Werkzeug mit Exe-Eintrag gefunden.'; return }
+
+    if (-not (Get-Module ps2exe -ListAvailable)) {
+        throw "Das Modul ps2exe fehlt. Einmalig installieren mit: Install-Module ps2exe -Scope CurrentUser"
+    }
+
+    Write-Output ("Baue {0} Werkzeuge: {1}`n" -f $alle.Count, ($alle -join ', '))
+    $ok = @(); $fehler = @()
+    foreach ($t in $alle) {
+        Write-Output "---- $t ----"
+        try {
+            & $MyInvocation.MyCommand.Path -Tool $t -Repo $Repo
+            $ok += $t
+        }
+        catch {
+            $fehler += [pscustomobject]@{ Tool = $t; Grund = $_.Exception.Message }
+            Write-Output "  FEHL $t : $($_.Exception.Message)"
+        }
+    }
+
+    Write-Output "`n==================== Bilanz ===================="
+    Write-Output ("  gebaut:        {0}" -f ($ok.Count))
+    if ($fehler) {
+        Write-Output ("  fehlgeschlagen: {0}" -f $fehler.Count)
+        $fehler | ForEach-Object { Write-Output ("    {0,-22} {1}" -f $_.Tool, $_.Grund) }
+        exit 1
+    }
+    Write-Output '  alle Werkzeuge gebaut.'
+    return
+}
+
+# Mehrere Werkzeuge ausdruecklich benannt: derselbe Weg, nur ohne Suchlauf.
+if ($Tool.Count -gt 1) {
+    if ($Version) { throw '-Version gilt nur fuer ein einzelnes Werkzeug.' }
+    foreach ($t in $Tool) {
+        Write-Output "---- $t ----"
+        & $MyInvocation.MyCommand.Path -Tool $t -Repo $Repo
+    }
+    return
+}
+# Eigene Variable statt $Tool = $Tool[0]: die Zuweisung an einen als [string[]] deklarierten
+# Parameter macht PowerShell sofort wieder zum Array, und Join-Path scheitert daran.
+$Werkzeug = $Tool[0]
+
+$ordner = Join-Path $Repo $Werkzeug
 $metaPfad = Join-Path $ordner 'release.psd1'
-if (-not (Test-Path $metaPfad)) { throw "Es gibt keine release.psd1 für '$Tool': $metaPfad" }
+if (-not (Test-Path $metaPfad)) { throw "Es gibt keine release.psd1 für '$Werkzeug': $metaPfad" }
 $meta = Import-PowerShellDataFile $metaPfad
 
 if (-not $meta.Exe) {
-    Write-Output "$Tool liefert keine EXE aus (kein Exe-Eintrag in release.psd1) - nichts zu bauen."
+    Write-Output "$Werkzeug liefert keine EXE aus (kein Exe-Eintrag in release.psd1) - nichts zu bauen."
     return
 }
 
@@ -75,15 +139,15 @@ $p2e = @{
     outputFile  = $out
     noConsole   = $true     # alle EXE-Werkzeuge hier haben eine Oberfläche
     STA         = $true     # WinForms und WPF verlangen das
-    title       = $(if ($meta.Title) { $meta.Title } else { $Tool })
-    description = $(if ($meta.Description) { $meta.Description } else { $Tool })
+    title       = $(if ($meta.Title) { $meta.Title } else { $Werkzeug })
+    description = $(if ($meta.Description) { $meta.Description } else { $Werkzeug })
     company     = 'azitc'
-    product     = $Tool
+    product     = $Werkzeug
     version     = $Version
 }
 if ($meta.RequireAdmin) { $p2e.requireAdmin = $true }
 
-$ico = Join-Path $ordner $(if ($meta.Icon) { $meta.Icon } else { "$Tool.ico" })
+$ico = Join-Path $ordner $(if ($meta.Icon) { $meta.Icon } else { "$Werkzeug.ico" })
 if (Test-Path $ico) { $p2e.iconFile = $ico }
 
 Invoke-ps2exe @p2e
