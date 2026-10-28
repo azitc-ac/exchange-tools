@@ -22,6 +22,7 @@
         @{ Tool = 'DeliveryDiagnostics'; Main = 'Test-MailboxDelivery.ps1';              Prolog = 'onprem' }
         @{ Tool = 'ExchangeCertFix'; Main = 'Remove-SupersededExchangeCertificate.ps1';  Prolog = 'onprem' }
         @{ Tool = 'MailboxDatabaseCheck'; Main = 'Test-MailboxDatabaseEmpty.ps1';      Prolog = 'onprem' }
+        @{ Tool = 'AttributeWritebackCheck'; Main = 'Test-ExchangeAttributeWriteback.ps1'; Prolog = 'exo' }
     )
 
     # Werkzeuge gegen Exchange Online mit eigener Verbindungslogik: nur die

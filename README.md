@@ -18,13 +18,14 @@ Werkzeug, jeder für sich lauffähig – es gibt keine gemeinsame Laufzeit und k
 | [EopMdoHardening](EopMdoHardening/) | EOP- und Defender-Assessment | 120 Prüfpunkte für Exchange Online Protection und Defender for Office 365: Ist-Zustand auslesen, Abweichungen begründen, Baseline setzen |
 | [MailboxDatabaseCheck](MailboxDatabaseCheck/) | Datenbank leer? | Alle Postfacharten einer Datenbank finden – auch Archive, Arbitration, AuditLog – mit Befehl zum Entfernen; vor `Remove-MailboxDatabase` oder dem Rückbau des letzten Servers |
 | [MailContactEditor](MailContactEditor/) | E-Mail-Kontakte (Exchange Online) | Kontakt aus filterbarer Liste wählen, primäre und externe Adresse ändern |
+| [AttributeWritebackCheck](AttributeWritebackCheck/) | Writeback der Exchange-Attribute | Empfängertyp, `mail` und primäre Adresse jedes synchronisierten Postfachs zwischen Exchange Online und AD vergleichen, jede Abweichung erklären, ein Urteil – vor und nach dem Einrichten des Writebacks |
 | [TestMailboxFiller](TestMailboxFiller/) | Testdaten im Postfach | Postfach mit rückdatierten Nachrichten füllen – für Retention Policies, OST-Zwischenspeicherung und Kontingente; on-premises über EWS, Exchange Online über Graph |
 
 ## Voraussetzungen
 
 Windows PowerShell 5.1. `AcmeExchange`, `ExchangeQueueViewer`, `ImportExchangePfx` und `MailboxDatabaseCheck` erwarten die
-Exchange-Verwaltungsshell auf dem Server, auf dem sie laufen. `EopMdoHardening` und
-`MailContactEditor` arbeiten gegen Exchange Online und erwarten das Modul
+Exchange-Verwaltungsshell auf dem Server, auf dem sie laufen. `EopMdoHardening`,
+`MailContactEditor` und `AttributeWritebackCheck` arbeiten gegen Exchange Online und erwarten das Modul
 `ExchangeOnlineManagement` **ab Version 3.6.0**. `LogViewer`, `ExchangeLogAnalyzer` und
 `ExchangeTester` sind davon unabhängig – der Tester läuft bewusst auch auf einem
 Arbeitsplatzrechner, weil er die Sicht des Clients einnimmt. `TestMailboxFiller` nutzt weder
