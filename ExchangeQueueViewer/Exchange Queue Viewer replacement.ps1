@@ -3,7 +3,7 @@
 # brach es mit "Get-Queue wird nicht erkannt" ab. Der Block zwischen den Markern stammt
 # aus build/Prolog.OnPrem.ps1 und wird von build/Sync-Prolog.ps1 gepflegt.
 # Einzige Stelle fuer die Versionsnummer; Build und Release-Tag lesen sie hier aus.
-$script:Version = '1.0.0'
+$script:Version = '1.0.1'
 
 $script:RequiredCmdlets = @('Get-Queue', 'Get-Message')
 $script:ToolIsGui       = $true
@@ -913,17 +913,11 @@ function Open-QueueViewerDialog {
     $null = $window.ShowDialog()
 }
 
-### Load Exchange shell
-$snapin = Get-PSSnapin -Registered Microsoft.Exchange.Management.PowerShell.E* -ErrorAction SilentlyContinue
-if ($null -eq $snapin) {
-    Write-Warning "Exchange snapin not available"
-} else {
-    if ($null -eq (Get-Command "Get-Queue" -ErrorAction SilentlyContinue)) {
-        Write-Host "Loading Exchange commands..."
-        Add-PSSnapin $snapin -ErrorAction SilentlyContinue
-    } else {
-        Write-Host "Exchange snapin already loaded"
-    }
-}
+# Das Snap-in laedt der Prolog ganz oben - samt Pruefung, ob die benoetigten Cmdlets
+# nach dem Laden wirklich da sind. Hier stand frueher eine zweite, aeltere Ladelogik;
+# sie war wirkungslos (der Prolog hatte laengst geladen) und ihr Write-Host erzeugte in
+# der mit -noConsole gebauten EXE bei JEDEM Start den Dialog
+# "Exchange snapin already loaded" - ps2exe leitet Write-Host dort auf eine MessageBox um.
+# In einem Werkzeug mit Oberflaeche darf auf dem Startpfad deshalb kein Write-Host stehen.
 
 Open-QueueViewerDialog

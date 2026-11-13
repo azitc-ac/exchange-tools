@@ -50,7 +50,23 @@ public class SmokeWin {
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, int msg, IntPtr w, IntPtr l);
+  // Fensterklassen der sichtbaren Fenster. MessageBox-Dialoge tragen die Klasse #32770 -
+  // nur daran laesst sich ein unerwuenschter Dialog von der eigentlichen Oberflaeche
+  // unterscheiden; ueber den Titel geht es nicht, der ist oft derselbe.
+  public static List<string> ClassesForPid(uint target) {
+    var res = new List<string>();
+    EnumWindows((h, l) => {
+      uint pid; GetWindowThreadProcessId(h, out pid);
+      if (pid == target && IsWindowVisible(h)) {
+        var c = new StringBuilder(300); GetClassName(h, c, 300);
+        var t = new StringBuilder(300); GetWindowText(h, t, 300);
+        res.Add(c.ToString() + "\t" + (t.Length > 0 ? t.ToString() : "(ohne Titel)"));
+      }
+      return true;
+    }, IntPtr.Zero);
+    return res; }
   // Nur Fenster MIT Titel: ein Werkzeug bringt oft unsichtbare Hilfsfenster mit, und
   // deren Symbol sagt nichts ueber die Titelleiste des Hauptfensters.
   public static IntPtr HandleForPid(uint target) {
@@ -122,6 +138,15 @@ foreach ($w in $werkzeuge) {
         }
         catch { }
     }
+
+    # Fensterklassen ebenfalls am LEBENDEN Prozess einsammeln. Kurz warten, weil ein
+    # Dialog oft erst einen Augenblick nach dem Hauptfenster erscheint.
+    $klassen = @()
+    if (-not $p.HasExited) {
+        Start-Sleep -Milliseconds 1200
+        $klassen = @([SmokeWin]::ClassesForPid([uint32]$p.Id))
+    }
+
     if (-not $p.HasExited) { $p.Kill(); $p.WaitForExit(5000) | Out-Null }
 
     if ($abgestuerzt) {
@@ -132,6 +157,27 @@ foreach ($w in $werkzeuge) {
     }
     else {
         $pass++; Write-Output ("  OK   {0,-22} Fenster nach {1}s: '{2}'" -f $w.Name, $sek, $fenster[0])
+
+        # Kein unerwarteter Dialog beim Start. Entstanden aus einem Fehler, den dieser
+        # Test zuvor durchgewunken hat: Der ExchangeQueueViewer zeigte bei JEDEM Start
+        # "Exchange snapin already loaded", weil ps2exe in einer mit -noConsole gebauten
+        # EXE jedes Write-Host auf eine MessageBox umleitet. Der Test sah ein Fenster mit
+        # passendem Titel und meldete OK - die Klasse verraet den Unterschied: #32770 ist
+        # ein Dialog, die eigentliche Oberflaeche hat eine WinForms- oder WPF-Klasse.
+        # Werkzeuge, die bewusst mit einem Dialog beginnen, setzen SmokeAllowDialog.
+        $dialoge = @($klassen | Where-Object { ($_ -split "`t")[0] -eq '#32770' })
+        if ($dialoge.Count -and -not $meta.SmokeAllowDialog) {
+            $fail++
+            Write-Output ("  FEHL {0,-22} unerwarteter Dialog beim Start: '{1}'" -f $w.Name, (($dialoge[0] -split "`t")[1]))
+            Write-Output ("       Haeufigste Ursache: ein Write-Host auf dem Startpfad - in einer")
+            Write-Output ("       mit -noConsole gebauten EXE wird daraus eine MessageBox.")
+        }
+        elseif ($meta.SmokeAllowDialog) {
+            $pass++; Write-Output ("  OK   {0,-22} Dialog beim Start ist vorgesehen (SmokeAllowDialog)" -f $w.Name)
+        }
+        else {
+            $pass++; Write-Output ("  OK   {0,-22} kein unerwarteter Dialog beim Start" -f $w.Name)
+        }
 
         # Titelleisten-Symbol: Windows holt sich dafuer ICON_SMALL. Wer das Fenstersymbol
         # ueber ExtractAssociatedIcon setzt, bekommt nur die 32er-Fassung und Windows
@@ -144,5 +190,5 @@ foreach ($w in $werkzeuge) {
     }
 }
 
-Write-Output ("  {0} gestartet, {1} ohne Fenster" -f ($pass + $fail), $fail)
+Write-Output ("  {0} Pruefpunkte, {1} fehlgeschlagen" -f ($pass + $fail), $fail)
 if ($fail -gt 0) { exit 1 }
