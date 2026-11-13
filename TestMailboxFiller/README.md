@@ -4,7 +4,7 @@ Füllt ein Postfach mit Testnachrichten, deren Zustell- und Sendezeitpunkt über
 zurückdatiert sind. Damit lassen sich Dinge prüfen, die am Datum oder an der Größe hängen:
 Retention Policies, OST-Zwischenspeicherung, Postfachgröße gegen ein Kontingent.
 
-![Version](https://img.shields.io/badge/Version-1.0.0-informational)
+![Version](https://img.shields.io/badge/Version-1.0.1-informational)
 
 Gegen **Exchange Server** über EWS, gegen **Exchange Online** über Microsoft Graph – EWS gegen
 Exchange Online wird von Microsoft nicht mehr unterstützt.
@@ -16,6 +16,7 @@ Exchange Online wird von Microsoft nicht mehr unterstützt.
 .\Populate-TestMailbox.ps1 -TargetMailbox test@firma.de -NumDaysBack 30 -MsgsPerDay 20 -MsgSize 5MB
 .\Populate-TestMailbox.ps1 -TargetMailbox test@firma.de -Remove
 .\Populate-TestMailbox.ps1 -TargetMailbox test@firma.de -Online -TenantId <GUID> -ClientId <GUID>
+.\Populate-TestMailbox.ps1 -TargetMailbox ich@firma.de -Delegated
 ```
 
 | Parameter | |
@@ -32,6 +33,7 @@ Exchange Online wird von Microsoft nicht mehr unterstützt.
 | `-Impersonate` | Über Impersonation statt Vollzugriff |
 | `-SkipCertificateCheck` | Zertifikatsprüfung aus (Testumgebungen) |
 | `-Online` | Gegen Exchange Online über Graph, mit `-TenantId`, `-ClientId`, `-ClientSecret` |
+| `-Delegated` | Gegen Exchange Online über Graph, aber nur in das **eigene** Postfach – ohne App-Registrierung und ohne Adminrechte |
 
 ## Füllen und Aufräumen
 
@@ -53,6 +55,11 @@ MAPI-Eigenschaften, die EWS und Graph gleichermaßen setzen können:
 Das letzte ist nicht optional: ohne gelöschtes `MSGFLAG_UNSENT` zeigt Outlook die Nachricht als
 unversandten Entwurf ohne Zeitstempel.
 
+Dass **Graph** diese Eigenschaften tatsächlich übernimmt und nicht stillschweigend überschreibt,
+ist am 13.11.2026 gegen einen echten Tenant gemessen: angeforderte Zeitpunkte 11.–13.11. kamen
+als `receivedDateTime` genau so zurück. Gegenprobe im selben Postfach: eine Nachricht ohne diese
+Eigenschaften trug den Zeitpunkt des Anlegens.
+
 Die Anlage besteht aus **Zufallsdaten**, nicht aus Nullbytes. Eine Datei voller Nullen wird beim
 Transport und in der Datenbank weggedrückt – für einen Größentest käme dann eine falsche Zahl
 heraus. Gemessen auf Exchange SE: 50 KB Füllmaterial ergeben 55.100 Byte Nachrichtengröße.
@@ -72,6 +79,26 @@ Add-MailboxPermission -Identity <Postfach> -User <Konto> -AccessRights FullAcces
 **Exchange Online:** App-Registrierung mit der **Application**-Berechtigung `Mail.ReadWrite`
 und Administratorzustimmung. Das Secret wird abgefragt, wenn `-ClientSecret` fehlt – es gehört
 nicht in eine Skriptdatei.
+
+**Exchange Online, delegiert (`-Delegated`):** gar keine eigene App-Registrierung, kein Secret,
+keine Adminrolle. Es genügt die **delegierte** Berechtigung `Mail.ReadWrite`, der jede Person
+für sich selbst zustimmen kann; verwendet wird die Erstanbieter-App *Microsoft Graph Command
+Line Tools*. Geschrieben wird ausschließlich nach `/me` – ein fremdes Postfach ist in diesem
+Modus technisch nicht erreichbar. `-TargetMailbox` muss der angemeldeten Person entsprechen,
+sonst bricht das Skript ab.
+
+Anmeldung vorher einmalig in derselben Sitzung:
+
+```powershell
+Connect-MgGraph -Scopes Mail.ReadWrite -UseDeviceAuthentication
+```
+
+Eine bereits bestehende Anmeldung wird übernommen – auch eine per `Connect-MgGraph
+-AccessToken` aus einem selbst geholten Token. Das Skript meldet sich dann nicht erneut an.
+
+> Erzwingt der Tenant zertifikatsbasierte Anmeldung (CBA), landet die Gerätecode-Anmeldung auf
+> einer Zertifikatsauswahl. Über **„Sign in another way" → „Use my password"** kommt man zurück
+> zur Kennwortanmeldung.
 
 ## Zwei Fallen auf dem Exchange-Server
 

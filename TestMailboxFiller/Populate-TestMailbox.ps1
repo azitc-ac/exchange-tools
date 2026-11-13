@@ -69,6 +69,18 @@ param(
     [Parameter(ParameterSetName = 'OnPrem')]
     [switch]$SkipCertificateCheck,
 
+    # Delegierter Zugriff auf das EIGENE Postfach der angemeldeten Person - ohne eigene
+    # App-Registrierung und ohne Geheimnis. Nutzt die Erstanbieter-App des Microsoft-Graph-
+    # PowerShell-SDK; noetig ist allein die DELEGIERTE Berechtigung Mail.ReadWrite, der die
+    # Person fuer sich selbst zustimmt. Kein Vollzugriff auf fremde Postfaecher, keine
+    # Anwendungsberechtigung, keine Admin-Rolle.
+    #
+    # Anmeldung einmalig in einer INTERAKTIVEN Sitzung, danach liegt das Token im Zwischen-
+    # speicher des SDK und dieses Skript findet es:
+    #   Connect-MgGraph -Scopes Mail.ReadWrite -UseDeviceAuthentication
+    [Parameter(Mandatory, ParameterSetName = 'Delegated')]
+    [switch]$Delegated,
+
     [Parameter(Mandatory, ParameterSetName = 'Online')]
     [switch]$Online,
 
@@ -82,7 +94,7 @@ param(
     [securestring]$ClientSecret
 )
 
-$script:Version = '1.0.0'
+$script:Version = '1.0.1'
 $ErrorActionPreference = 'Stop'
 
 if ($MsgSize -notmatch '^\s*([\d.,]+)\s*(B|KB|MB|GB)?\s*$') {
@@ -95,6 +107,13 @@ if ($groesse -lt 1) { throw "MsgSize '$MsgSize' ergibt $groesse Bytes." }
 # Daran erkennt -Remove die eigenen Nachrichten wieder.
 $betreffPraefix = 'Date / Time Test Day #'
 
+# Derselbe Praefix, fertig fuer einen OData-$filter in einer URL. Beide Graph-Zweige
+# benutzen DIESE eine Fassung - vorher hatte jeder seine eigene, und beide waren falsch.
+# Das abschliessende '#' muss prozentkodiert sein, sonst liest Graph es als Beginn des
+# URL-Fragments, wirft den Rest weg und meldet einen unterminierten String im Filter.
+# Reihenfolge zaehlt: erst die OData-Maskierung (' verdoppeln), dann prozentkodieren.
+$filterPraefix = [uri]::EscapeDataString($betreffPraefix.Replace("'", "''"))
+
 if (-not $Remove) {
     # Zufallsdaten, keine Nullen: eine Datei voller Nullen schrumpft bei der Übertragung
     # und in der Datenbank zusammen. Für Größentests käme sonst eine falsche Zahl heraus.
@@ -104,8 +123,96 @@ if (-not $Remove) {
 }
 $flags = if ($Unread) { 0 } else { 1 }   # PR_MESSAGE_FLAGS: 1 = gelesen, 0 = ungelesen
 
+# ------------------------------------------------- Exchange Online / Graph, DELEGIERT
+# Schreibt ausschliesslich nach /me - also in das Postfach der angemeldeten Person. Damit
+# ist es technisch unmoeglich, versehentlich ein fremdes Postfach zu fuellen.
+if ($Delegated) {
+
+    if (-not $Remove -and $groesse -gt 3MB) {
+        throw "MsgSize $MsgSize ($groesse Bytes) ist zu groß für Graph (Grenze 3 MB je Anlage)."
+    }
+
+    Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
+
+    # Eine bereits bestehende Anmeldung wird wiederverwendet - egal woher sie stammt
+    # (interaktiv, Gerätecode, -AccessToken aus einem eigenen Token-Lauf). Ein
+    # unbedingtes Connect-MgGraph -Scopes wuerde hier eine ZWEITE, interaktive Anmeldung
+    # anstossen und einen unbeaufsichtigten Lauf zum Stehen bringen.
+    $kontext = Get-MgContext
+    if (-not $kontext -or $kontext.Scopes -notcontains 'Mail.ReadWrite') {
+        # Ohne -NoWelcome schreibt das SDK einen Begrüßungsblock, der in Protokollen stört.
+        try { $null = Connect-MgGraph -Scopes 'Mail.ReadWrite' -NoWelcome -ErrorAction Stop }
+        catch {
+            throw ("Anmeldung an Microsoft Graph fehlgeschlagen: $($_.Exception.Message)`n" +
+                   "Einmalig in einer INTERAKTIVEN Sitzung anmelden, danach findet dieses Skript das Token:`n" +
+                   "  Connect-MgGraph -Scopes Mail.ReadWrite -UseDeviceAuthentication")
+        }
+        $kontext = Get-MgContext
+    }
+    if (-not $kontext -or -not $kontext.Account) { throw 'Keine Graph-Anmeldung vorhanden.' }
+
+    # Schutz gegen Verwechslung: Wer -TargetMailbox angibt, muss auch der angemeldete
+    # Benutzer sein - sonst fuellt man im Glauben an das eine das andere Postfach.
+    if ($TargetMailbox -and $kontext.Account -ne $TargetMailbox) {
+        throw ("Angemeldet ist '$($kontext.Account)', angegeben wurde '$TargetMailbox'.`n" +
+               "Im delegierten Modus wird immer das Postfach der angemeldeten Person gefüllt. " +
+               "Entweder -TargetMailbox '$($kontext.Account)' setzen oder sich als '$TargetMailbox' anmelden.")
+    }
+    Write-Verbose "Angemeldet als $($kontext.Account), Berechtigungen: $($kontext.Scopes -join ', ')"
+
+    $ziel = "/v1.0/me/mailFolders/$($Folder.ToLower())/messages"
+    if (-not $Remove) { $b64 = [Convert]::ToBase64String($fuell) }
+
+    function Remove-TestMessages {
+        $weg = 0
+        do {
+            $uri = "{0}?`$filter=startswith(subject,'{1}')&`$select=id&`$top=50" -f $script:ziel, $script:filterPraefix
+            $treffer = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+            foreach ($m in $treffer.value) {
+                $null = Invoke-MgGraphRequest -Method DELETE -Uri "$script:ziel/$($m.id)" -ErrorAction Stop
+                $weg++
+            }
+            Write-Progress -Activity 'Lösche Testnachrichten' -Status "$weg gelöscht"
+        } while ($treffer.value.Count -gt 0)
+        Write-Progress -Activity 'Lösche Testnachrichten' -Completed
+        return $weg
+    }
+
+    function New-TestMessage {
+        param([datetime]$Zeitpunkt, [string]$Betreff)
+
+        $stempel = $Zeitpunkt.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $rumpf = @{
+            subject      = $Betreff
+            body         = @{ contentType = 'Text'; content = 'Testnachricht zur Prüfung datumsabhängiger Funktionen.' }
+            toRecipients = @(@{ emailAddress = @{ address = $script:kontext.Account } })
+            isRead       = (-not $script:Unread)
+            singleValueExtendedProperties = @(
+                @{ id = 'SystemTime 0x0E06'; value = $stempel }   # PR_MESSAGE_DELIVERY_TIME
+                @{ id = 'SystemTime 0x0039'; value = $stempel }   # PR_CLIENT_SUBMIT_TIME
+                @{ id = 'Integer 0x0E07';    value = "$script:flags" }
+            )
+            attachments  = @(@{
+                '@odata.type' = '#microsoft.graph.fileAttachment'
+                name          = 'fuelldaten.bin'
+                contentBytes  = $script:b64
+            })
+        }
+
+        for ($versuch = 1; $versuch -le 5; $versuch++) {
+            try { $null = Invoke-MgGraphRequest -Method POST -Uri $script:ziel -Body $rumpf -ErrorAction Stop; return }
+            catch {
+                $code = $_.Exception.Response.StatusCode.value__
+                if ($code -ne 429 -and $code -ne 503) { throw }
+                Write-Warning "Graph bremst (HTTP $code), warte 10 s"
+                Start-Sleep -Seconds 10
+            }
+        }
+        throw 'Graph bremst dauerhaft - Lauf abgebrochen.'
+    }
+}
 # ----------------------------------------------------------------- Exchange Online / Graph
-if ($Online) {
+elseif ($Online) {
 
     # Graph nimmt Anlagen beim Erstellen nur bis 3 MB in einem Rutsch; darüber braucht es
     # eine Upload-Session. Lieber hier abbrechen als nach 400 Nachrichten.
@@ -134,7 +241,7 @@ if ($Online) {
         $weg = 0
         do {
             $treffer = Invoke-RestMethod -Method Get -Headers $script:kopf `
-                -Uri ("{0}?`$filter=startswith(subject,'{1}')&`$select=id&`$top=50" -f $script:ziel, $script:betreffPraefix.Replace("'", "''"))
+                -Uri ("{0}?`$filter=startswith(subject,'{1}')&`$select=id&`$top=50" -f $script:ziel, $script:filterPraefix)
             foreach ($m in $treffer.value) {
                 Invoke-RestMethod -Method Delete -Headers $script:kopf -Uri "$script:ziel/$($m.id)" | Out-Null
                 $weg++
@@ -315,9 +422,26 @@ $fehler  = 0
 $erzeugt = 0
 $abstand = [int](600 / [Math]::Max($MsgsPerDay, 1))   # Nachrichten über den Arbeitstag verteilen
 
-Write-Host ("Ziel: {0} / {1}   Modus: {2}" -f $TargetMailbox, $Folder, $(if ($Online) { 'Graph' } else { 'EWS' }))
-Write-Host ("Plan: {0} Nachrichten à {1:N0} KB = {2:N2} GB über {3} Tage" -f `
-    $gesamt, ($groesse / 1KB), ($gesamt * $groesse / 1GB), $NumDaysBack)
+# Der Modustext haengt am Parametersatz, nicht an einzelnen Schaltern: eine Abfrage auf
+# $Online allein hat den delegierten Lauf als "EWS" ausgegeben. Ein kuenftiger vierter
+# Modus faellt hier auf, statt still einen falschen Namen zu erben.
+$modus = switch ($PSCmdlet.ParameterSetName) {
+    'OnPrem'    { 'EWS' }
+    'Delegated' { 'Graph, delegiert (eigenes Postfach)' }
+    'Online'    { 'Graph, App-Berechtigung' }
+    default     { "unbenannt: $($PSCmdlet.ParameterSetName)" }
+}
+Write-Host ("Ziel: {0} / {1}   Modus: {2}" -f $TargetMailbox, $Folder, $modus)
+# Kleine Laeufe als "0,00 GB" auszugeben hilft niemandem - Einheit nach Groesse waehlen.
+function Format-Menge {
+    param([double]$Bytes)
+    if ($Bytes -ge 1GB) { '{0:N2} GB' -f ($Bytes / 1GB) }
+    elseif ($Bytes -ge 1MB) { '{0:N1} MB' -f ($Bytes / 1MB) }
+    else { '{0:N0} KB' -f ($Bytes / 1KB) }
+}
+
+Write-Host ("Plan: {0} Nachrichten à {1:N0} KB = {2} über {3} Tage" -f `
+    $gesamt, ($groesse / 1KB), (Format-Menge ($gesamt * $groesse)), $NumDaysBack)
 
 for ($i = 0; $i -lt $NumDaysBack; $i++) {
     $tag = $heute.AddDays(-$i).Date.AddHours(8)
@@ -341,6 +465,6 @@ for ($i = 0; $i -lt $NumDaysBack; $i++) {
 }
 Write-Progress -Activity 'Erzeuge Nachrichten' -Completed
 
-Write-Host ("Fertig: {0} Nachrichten erzeugt, {1} Fehler, rund {2:N2} GB geschrieben" -f `
-    $erzeugt, $fehler, ($erzeugt * $groesse / 1GB))
+Write-Host ("Fertig: {0} Nachrichten erzeugt, {1} Fehler, rund {2} geschrieben" -f `
+    $erzeugt, $fehler, (Format-Menge ($erzeugt * $groesse)))
 if ($fehler -gt 0) { exit 1 }
