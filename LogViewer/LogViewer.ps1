@@ -167,7 +167,7 @@ Add-Type -AssemblyName System.Drawing
 # ── Dateitypen ────────────────────────────────────────────────────────────────
 # Eintragen, Prüfen und Entfernen liegen hier zusammen; LogViewer-register.ps1 ruft nur noch
 # dieses Programm auf, damit es keine zweite Fassung derselben Logik gibt.
-$script:Version  = '3.1.1'
+$script:Version  = '3.1.2'
 $script:BlogUrl  = 'https://blog.zarenko.net'
 $script:ProgId   = 'LogViewer.LogFile'
 $script:StateKey = 'HKCU:\Software\LogViewer'
@@ -603,6 +603,21 @@ public static class LogCore
         return -1;
     }
 }
+
+// Fenstersymbol-Aufrufe. Stehen bewusst HIER und nicht in einem zweiten Add-Type:
+// jeder Add-Type-Aufruf startet einen eigenen Compilerdurchlauf, dessen Fixkosten
+// die Codemenge weit ueberwiegen. Gemessen am 13.11.2026: zwei getrennte Aufrufe
+// 420 ms, zusammengelegt 254 ms - rund 165 ms des Starts allein dafuer.
+namespace Native
+{
+    public class WinIcon
+    {
+        [System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        public static extern uint ExtractIconEx(string file, int index, out System.IntPtr large, out System.IntPtr small, uint count);
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        public static extern System.IntPtr SendMessage(System.IntPtr hWnd, int msg, System.IntPtr wParam, System.IntPtr lParam);
+    }
+}
 '@ -Language CSharp
 
 # Typbeschriftungen an den Kern durchreichen (einmalig, nicht pro Zeile)
@@ -1036,16 +1051,8 @@ $form.StartPosition='CenterScreen'; $form.MinimumSize=New-Object System.Drawing.
 # wenn die Ressource 16 bis 256 Pixel enthaelt. Windows rechnet sie dann fuer die
 # Titelleiste auf 16 herunter, und das Symbol wirkt dort matschig. ExtractIconEx gibt
 # die grosse UND die kleine Fassung getrennt zurueck.
-if (-not ('Native.WinIcon' -as [type])) {
-    try {
-        Add-Type -Namespace Native -Name WinIcon -MemberDefinition @'
-[System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
-public static extern uint ExtractIconEx(string file, int index, out System.IntPtr large, out System.IntPtr small, uint count);
-[System.Runtime.InteropServices.DllImport("user32.dll")]
-public static extern System.IntPtr SendMessage(System.IntPtr hWnd, int msg, System.IntPtr wParam, System.IntPtr lParam);
-'@ -ErrorAction Stop
-    } catch { }
-}
+# Native.WinIcon wird oben im gemeinsamen Add-Type-Block mitkompiliert; die Pruefungen
+# weiter unten bleiben, damit das Fenster auch dann erscheint, wenn der Typ fehlt.
 $script:SmallIconHandle = [IntPtr]::Zero
 try {
     $selfPath = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
