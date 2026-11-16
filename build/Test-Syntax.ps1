@@ -31,13 +31,46 @@ $dateien = Get-ChildItem $Repo -Filter *.ps1 -Recurse -File |
 
 foreach ($f in $dateien) {
     $err = $null
-    [void][System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$err)
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$err)
     $rel = $f.FullName.Substring($Repo.Length).TrimStart('\')
     if ($err.Count) {
         $fail++
         Write-Output ("  FEHL {0}" -f $rel)
         $err | Select-Object -First 3 | ForEach-Object {
             Write-Output ("         Zeile {0}: {1}" -f $_.Extent.StartLineNumber, $_.Message)
+        }
+        continue
+    }
+    # { Eigene-Funktion }.GetNewClosure(): der Block sucht Befehle in einem neuen Modul-Scope und findet
+    # die Skriptfunktionen nicht, wenn das Skript mit & (Konsole, -Command) statt -File gestartet wurde.
+    # Abhilfe: $fn = ${function:Name}; { & $fn ... }.GetNewClosure()
+    $eigene = @($ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object { $_.Name })
+    $closures = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and
+                               $args[0].Member.Value -eq 'GetNewClosure' -and
+                               $args[0].Expression -is [System.Management.Automation.Language.ScriptBlockExpressionAst] }, $true)
+    foreach ($c in $closures) {
+        $treffer = @($c.Expression.FindAll({ $args[0] -is [System.Management.Automation.Language.CommandAst] -and
+                                             $args[0].GetCommandName() -in $eigene }, $true))
+        foreach ($t in $treffer) {
+            $fail++
+            Write-Output ("  FEHL {0}" -f $rel)
+            Write-Output ("         Zeile {0}: {1} per Name in GetNewClosure()-Block - bei Aufruf mit & nicht gefunden; `${{function:{1}}} einfangen" -f
+                          $t.Extent.StartLineNumber, $t.GetCommandName())
+        }
+    }
+    # $PSScriptRoot/$PSCommandPath im Standardwert eines Skript-Parameters: in Windows PowerShell 5.1
+    # mit [CmdletBinding()] leer (z. B. Join-Path scheitert schon bei der Bindung). Erst im Rumpf aufloesen.
+    if ($ast.ParamBlock) {
+        foreach ($p in $ast.ParamBlock.Parameters) {
+            if (-not $p.DefaultValue) { continue }
+            $v = $p.DefaultValue.FindAll({ $args[0] -is [System.Management.Automation.Language.VariableExpressionAst] -and
+                                           $args[0].VariablePath.UserPath -in 'PSScriptRoot', 'PSCommandPath' }, $true)
+            if (@($v).Count) {
+                $fail++
+                Write-Output ("  FEHL {0}" -f $rel)
+                Write-Output ("         Zeile {0}: Parameter {1} nutzt {2} im Standardwert (leer unter PS 5.1) - im Rumpf setzen" -f
+                              $p.Extent.StartLineNumber, $p.Name.Extent.Text, $v[0].Extent.Text)
+            }
         }
     }
 }

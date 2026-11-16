@@ -184,6 +184,12 @@ it into the provider's field and press **2. Get + install certificate**; on the 
 engine reads secrets for that run from a JSON file pointed to by the `ACME_PLUGIN_SECRETS`
 environment variable (the GUI does this for you).
 
+The secret is encrypted with a per-account AES key in the Posh-ACME home (ACL: SYSTEM +
+Administrators), not with the user's DPAPI key - so the admin who enters it in the GUI and the
+SYSTEM renewal task can both use it. Accounts created by older versions are switched over on the
+next GUI/`-Renew` run by that admin. Later runs merge new arguments over the stored ones, so a
+renewal never drops the secret. `tests\Test-PluginEncryption.ps1` checks both.
+
 ## What the wizard creates
 
 This is the **Azure** provider. The other providers create nothing in the cloud - you supply a DNS

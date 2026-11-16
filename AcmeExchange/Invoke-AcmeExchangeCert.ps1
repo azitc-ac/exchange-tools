@@ -63,14 +63,16 @@ param(
     [switch]$NonInteractive,
     [switch]$SkipInstall,
     [switch]$Yes,
-    [string]$ConfigPath = (Join-Path $PSScriptRoot 'config.json')
+    [string]$ConfigPath   # default: config.json next to this script (set below)
 )
+# not as a param default: with [CmdletBinding()] Windows PowerShell 5.1 leaves $PSScriptRoot empty there
+if (-not $ConfigPath) { $ConfigPath = Join-Path $PSScriptRoot 'config.json' }
 
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$script:ScriptVersion   = '1.0.0'
+$script:ScriptVersion   = '1.0.1'
 $script:EventSource     = 'AcmeExchangeCert'
 $script:LogFile         = $null
 $script:Config          = $null
@@ -520,7 +522,19 @@ function Send-Notification {
         $msg.IsBodyHtml = $false
         $client = New-Object Net.Mail.SmtpClient($n.SmtpServer, [int]$n.Port)
         $client.EnableSsl = [bool]$n.UseSsl
-        $client.Send($msg)
+        # 4xx right after the tool restarted MSExchangeTransport ("4.7.0 Temporary server error ... PRX5"):
+        # the frontend cannot reach the backend yet - retry a few times instead of losing the mail
+        for ($try = 1; ; $try++) {
+            try { $client.Send($msg); break }
+            catch {
+                $code = $null; $e = $_.Exception
+                while ($e -and -not ($e -is [Net.Mail.SmtpException])) { $e = $e.InnerException }
+                if ($e) { $code = [int]$e.StatusCode }
+                if ($try -ge 4 -or -not $code -or $code -lt 400 -or $code -ge 500) { throw }
+                Write-Log "SMTP temporarily refused ($code), retrying in 20s ($try/3) ..." WARN
+                Start-Sleep -Seconds 20
+            }
+        }
         Write-Log "Notification mail sent to $($recipients -join ', ') ($Level): $Subject" OK
     } catch {
         Write-Log "Sending notification failed: $($_.Exception.Message)" ERROR
@@ -746,7 +760,10 @@ function Test-HttpsPresented {
     param([pscustomobject]$Server, [string]$Thumbprint)
     if ($script:Config.Exchange.Services -notmatch 'IIS') { return $true }
     $fqdn = $Server.Fqdn
-    $probe = { Test-TlsEndpoint -HostName $fqdn -Port 443 }.GetNewClosure()
+    # capture the function itself: a GetNewClosure() block resolves commands in a new module scope
+    # and does not see this script's functions when the script was invoked with & (console, -Command)
+    $fn = ${function:Test-TlsEndpoint}
+    $probe = { & $fn -HostName $fqdn -Port 443 }.GetNewClosure()
     $ok = Wait-ForThumbprint -Expected $Thumbprint -Probe $probe
     Write-Log "[$($Server.Name)] HTTPS :443 presents new certificate: $ok" $(if ($ok) { 'OK' } else { 'ERROR' })
     return $ok
@@ -762,7 +779,8 @@ function Confirm-SmtpPresented {
     if ($script:Config.Exchange.Services -notmatch 'SMTP') { return }
     foreach ($s in $Servers) {
         $fqdn = $s.Fqdn
-        $probe = { Test-StartTls -HostName $fqdn -Port 25 }.GetNewClosure()
+        $fn = ${function:Test-StartTls}   # see Test-HttpsPresented: captured, not looked up by name
+        $probe = { & $fn -HostName $fqdn -Port 25 }.GetNewClosure()
         $ok = Wait-ForThumbprint -Expected $Thumbprint -Probe $probe -Attempts 3 -DelaySeconds 5
         if (-not $ok -and $script:Config.Exchange.RestartTransportIfStale) {
             Write-Log "[$($s.Name)] SMTP :25 not yet presenting the new certificate; restarting MSExchangeTransport once." WARN
@@ -929,10 +947,11 @@ function Install-Certificate {
     # Update the connectors BEFORE checking SMTP, because what :25 presents follows the connector's
     # TlsCertificateName (issuer+subject), which changes when the CA's intermediate changes.
     $changed = @()
-    if ($script:Config.Exchange.UpdateConnectors) { $changed = Update-ConnectorCertificates -NewCert $newCert }
+    # @(): a function returning an empty array returns $null, and $null.Count throws under StrictMode
+    if ($script:Config.Exchange.UpdateConnectors) { $changed = @(Update-ConnectorCertificates -NewCert $newCert) }
     Confirm-SmtpPresented -Servers $servers -Thumbprint $tp
     $removed = @()
-    if ($script:Config.Exchange.RemoveOldCertificate) { $removed = Remove-SupersededCertificates -NewCert $newCert -Servers $servers }
+    if ($script:Config.Exchange.RemoveOldCertificate) { $removed = @(Remove-SupersededCertificates -NewCert $newCert -Servers $servers) }
     # Name the backup after the certificate that was actually installed - works in both modes and
     # does not depend on the configured ACME domain list.
     $backup = Backup-Pfx -PfxPath $pfxPath -Domain ($newCert.Subject -replace '^CN=', '' -replace ',.*$', '')
@@ -1220,6 +1239,8 @@ function Save-PfxSubject {
 function Publish-InstallResult {
     <# One reporting path for both modes (ACME renewal and PFX import). #>
     param($Result, [string]$Headline)
+    # $null/scalar/array alike: @($null).Count is 1, and .Count on $null or a scalar throws under StrictMode 5.1
+    $conn = @($Result.Connectors | Where-Object { $_ }); $rem = @($Result.Removed | Where-Object { $_ }); $fb = @($Result.Fallback | Where-Object { $_ })
     $body = @"
 $Headline
 
@@ -1230,9 +1251,9 @@ Valid until: $($Result.NotAfter)
 Servers:     $($Result.Servers -join ', ')
 Services:    $($script:Config.Exchange.Services)
 
-Connectors updated: $(if ($Result.Connectors.Count) { "`r`n  " + ($Result.Connectors -join "`r`n  ") } else { 'none' })
-Old certificates removed: $(if ($Result.Removed.Count) { "`r`n  " + ($Result.Removed -join "`r`n  ") } else { 'none' })
-KSP fallback used on: $(if ($Result.Fallback.Count) { $Result.Fallback -join ', ' } else { 'none' })
+Connectors updated: $(if ($conn.Count) { "`r`n  " + ($conn -join "`r`n  ") } else { 'none' })
+Old certificates removed: $(if ($rem.Count) { "`r`n  " + ($rem -join "`r`n  ") } else { 'none' })
+KSP fallback used on: $(if ($fb.Count) { $fb -join ', ' } else { 'none' })
 Backup: $($Result.Backup)
 "@
     Write-EventLogEntry -Message $body -Type Information -Id 9000
@@ -1289,13 +1310,29 @@ function Wait-AuthCertPropagation {
     } catch { }
 }
 
+function Initialize-PAAccountSafe {
+    <#
+      Create the ACME account if needed and make sure it uses Posh-ACME's AES plugin encryption.
+      Without it, secret plugin args (API keys) are DPAPI-encrypted for the CURRENT USER: issued
+      by an admin in the GUI, the SYSTEM renewal task cannot decrypt them and renewal fails.
+      The AES key lives in POSHACME_HOME, which is ACL'd to SYSTEM + Administrators.
+      An existing account is migrated (re-encrypts the stored args; only possible as the user
+      who stored them, i.e. on the next GUI/-Renew run by that admin).
+    #>
+    param([string]$Contact)
+    if (-not (Get-PAAccount)) {
+        New-PAAccount -Contact $Contact -AcceptTOS -UseAltPluginEncryption | Out-Null
+        Write-Log "ACME account created for $Contact" OK
+    } elseif (-not ((Get-PAAccount).PSObject.Properties['sskey'] -and (Get-PAAccount).sskey)) {   # StrictMode: property may be absent
+        Set-PAAccount -UseAltPluginEncryption | Out-Null
+        Write-Log 'ACME account switched to machine-portable plugin encryption (SYSTEM task can read the DNS credentials).' OK
+    }
+}
+
 function New-ManagedCertificate {
     # Request a certificate via the configured DNS-01 provider (first issuance or forced re-issue).
     # Retries on auth errors, which right after Azure setup are credential-propagation lag.
-    if (-not (Get-PAAccount)) {
-        New-PAAccount -Contact $script:Config.Acme.Contact -AcceptTOS | Out-Null
-        Write-Log "ACME account created for $($script:Config.Acme.Contact)" OK
-    }
+    Initialize-PAAccountSafe $script:Config.Acme.Contact
     $provider = Get-DnsProviderName
     $plugin   = (Get-DnsProviders)[$provider].Plugin
     if ($provider -eq 'Azure') { Wait-AuthCertPropagation }
@@ -1351,8 +1388,16 @@ function Invoke-Renewal {
         $newCert = New-ManagedCertificate
     } else {
         Write-Log "Order status: $($order.status), expires $($order.CertExpires), renew after $($order.RenewAfter)" INFO
+        # accounts from older versions: switch to portable plugin encryption (only works as the user who stored the args)
+        try { Initialize-PAAccountSafe $script:Config.Acme.Contact }
+        catch { Write-Log "Could not switch the ACME account to portable plugin encryption: $($_.Exception.Message) - run step 2 in the GUI (or -Renew) once as the admin who entered the DNS credentials." WARN }
         # keep the stored plugin args current (Azure: cert-based, always; others: only when new creds were supplied)
-        try { $pa = Resolve-PluginArgs; if ($pa) { Set-PAOrder -MainDomain $mainDomain -PluginArgs $pa | Out-Null } } catch { }
+        # Set-PAOrder REPLACES all args of the plugin - passing only the non-secret ones from config
+        # would wipe the stored secret on every renewal. So merge new over stored.
+        try {
+            $pa = Resolve-PluginArgs
+            if ($pa) { Set-PAOrder -MainDomain $mainDomain -PluginArgs (Merge-PluginArgs (Get-PAPluginArgs -MainDomain $mainDomain) $pa) | Out-Null }
+        } catch { Write-Log "Could not update the stored DNS plugin arguments: $($_.Exception.Message)" WARN }
         Write-Log 'Renewing: publishing the DNS TXT record and waiting for DNS propagation + Let''s Encrypt validation - this usually takes 1-3 minutes with no further output. Please wait ...' INFO
         $warnings = @()
         $newCert = Submit-Renewal -MainDomain $mainDomain -Force:$forced -WarningVariable warnings -WarningAction SilentlyContinue
@@ -1597,7 +1642,7 @@ function Step-Discovery {
     if (-not $subs.Count) { throw 'No enabled subscriptions visible for this account.' }
 
     $defDomains = @($Cfg.Acme.Domains)
-    $domains = Read-List 'Certificate names (first = main domain; wildcard and apex recommended)' $defDomains
+    $domains = @(Read-List 'Certificate names (first = main domain; wildcard and apex recommended)' $defDomains)   # @(): one name comes back as a scalar, .Count throws under StrictMode 5.1
     if (-not $domains.Count) { throw 'No certificate names configured.' }
     $Cfg.Acme.Domains = $domains
 
@@ -1805,10 +1850,7 @@ function Step-FirstCertificate {
         Set-PAOrder -MainDomain $main -PluginArgs (Get-AzurePluginArgs $Cfg) | Out-Null
         return
     }
-    if (-not (Get-PAAccount)) {
-        New-PAAccount -Contact $Cfg.Acme.Contact -AcceptTOS | Out-Null
-        Write-Log "ACME account created for $($Cfg.Acme.Contact)" OK
-    }
+    Initialize-PAAccountSafe $Cfg.Acme.Contact
     $pfxPass = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 24 | ForEach-Object { [char]$_ })
     $params = @{
         Domain        = $Cfg.Acme.Domains
@@ -1848,7 +1890,7 @@ function Step-FirstCertificate {
         return
     }
     $result = Install-Certificate -PACert $cert
-    Write-Log "Installed on $($result.Servers -join ', '); connectors changed: $($result.Connectors.Count); removed: $($result.Removed.Count); fallback: $($result.Fallback -join ',')" OK
+    Write-Log "Installed on $($result.Servers -join ', '); connectors changed: $(@($result.Connectors).Count); removed: $(@($result.Removed).Count); fallback: $($result.Fallback -join ',')" OK
     Write-EventLogEntry -Message "Initial certificate $($cert.Thumbprint) installed by setup wizard." -Type Information -Id 9000
 }
 
@@ -1871,6 +1913,14 @@ function Get-AzurePluginArgs {
 function Get-DnsProviderName {
     $p = if ($script:Config.Acme.PSObject.Properties['DnsProvider'] -and $script:Config.Acme.DnsProvider) { $script:Config.Acme.DnsProvider } else { 'Azure' }
     return $p
+}
+
+function Merge-PluginArgs {
+    <# Stored plugin args overlaid with new ones (new wins). Neither input is modified. #>
+    param($Stored, $New)
+    $m = @{}
+    foreach ($h in @($Stored, $New)) { if ($h) { foreach ($k in @($h.Keys)) { $m[$k] = $h[$k] } } }
+    return $m
 }
 
 function Resolve-PluginArgs {
@@ -1951,7 +2001,12 @@ function Invoke-SetupWizard {
     # certificate is a separate, repeatable step (GUI step 2 / -Renew), which is also what the
     # scheduled task runs on its first execution.
     Show-Banner 'Setup complete'
-    Write-Host '  Azure app, credential, role and configuration are ready. No certificate was issued yet.'
+    if ((Get-DnsProviders)[$provider].Bootstrap) {
+        Write-Host '  Azure app, credential, role and configuration are ready. No certificate was issued yet.'
+    } else {
+        Write-Host "  Configuration for DNS provider '$provider' is ready. No certificate was issued yet."
+        Write-Host '  The DNS API credentials are entered once with the first issuance (GUI step 2) and then kept encrypted.'
+    }
     Write-Host ''
     Write-Host '  >>> NEXT: create the scheduled task now. <<<' -ForegroundColor Yellow
     Write-Host '      It issues and installs the certificate on its first run, then renews automatically.' -ForegroundColor Yellow

@@ -25,7 +25,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # Single place for the version number; build and release tag read it from here.
-$script:Version = '1.0.0'
+$script:Version = '1.0.1'
 
 # --- locate bundle + engine (works as .ps1 and when wrapped into an .exe by PS2EXE) ---
 $BundleRoot =
