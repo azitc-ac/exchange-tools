@@ -2,8 +2,8 @@
 
 Let's Encrypt certificates for **Exchange Server on-premises** (2016/2019/SE), validated via
 **DNS-01** with [Posh-ACME](https://github.com/rmbolger/Posh-ACME). **Azure DNS** is the
-first-class provider (fully automated, secret-less setup); **Cloudflare, Route 53, GoDaddy and
-DigitalOcean** are also supported with an API token.
+first-class provider (fully automated, secret-less setup); **Cloudflare, Route 53, GoDaddy,
+DigitalOcean and IONOS** are also supported with an API token.
 
 Two ways to use it: the **GUI (`Setup.exe`)** - what most admins want - or the engine
 (`Invoke-AcmeExchangeCert.ps1`) on the command line. The GUI only edits config and launches the
@@ -171,6 +171,11 @@ validation itself is done by Posh-ACME.
 | **Route 53** | Prepares Exchange + config only. | access key + secret key |
 | **GoDaddy** | Prepares Exchange + config only. | key + secret |
 | **DigitalOcean** | Prepares Exchange + config only. | API token |
+| **IONOS** | Prepares Exchange + config only; create the key at developer.hosting.ionos.de (DNS API). | key prefix + secret |
+
+`tests\Test-DnsProviders.ps1` checks every entry against the bundled Posh-ACME plugin (field names,
+mandatory parameters, secret vs. plain) and against this table - a new provider is one entry in
+`Get-DnsProviders` plus one row here.
 
 For the non-Azure providers, only the **non-secret** arguments are stored in `config.json`
 (`Acme.DnsPluginArgs`); the **secret** (token / secret key) is handed to the engine once and then
@@ -308,7 +313,7 @@ See `THIRD-PARTY-NOTICES.md`.
 * Outbound HTTPS to Let's Encrypt and your DNS provider's API (for **Azure**:
   `login.microsoftonline.com`, `management.azure.com`, `graph.microsoft.com`)
 * DNS zone(s) hosted at a supported provider (Azure DNS, Cloudflare, Route 53, GoDaddy,
-  DigitalOcean)
+  DigitalOcean, IONOS)
 
 ## Complete removal (fresh start)
 

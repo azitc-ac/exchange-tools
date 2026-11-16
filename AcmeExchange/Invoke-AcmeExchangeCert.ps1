@@ -135,7 +135,7 @@ function Get-DefaultConfig {
             Domains         = @()
             Contact         = ''
             KeyLength       = '2048'
-            DnsProvider     = 'Azure'   # Azure | Cloudflare | Route53 | GoDaddy | DigitalOcean
+            DnsProvider     = 'Azure'   # Azure | Cloudflare | Route53 | GoDaddy | DigitalOcean | IONOS
             DnsPluginArgs   = @{}       # NON-secret plugin args only (e.g. Route53 access key); secrets live encrypted in the Posh-ACME order
         }
         Azure    = [ordered]@{
@@ -210,6 +210,9 @@ function Get-DnsProviders {
                                 @{ Key = 'GDSecretSecure';Label = 'GoDaddy API Secret';      Secure = $true }) }
         'DigitalOcean' = @{ Plugin = 'DOcean';     Bootstrap = $false; Fields = @(
                                 @{ Key = 'DOTokenSecure'; Label = 'DigitalOcean API Token';  Secure = $true }) }
+        'IONOS'        = @{ Plugin = 'IONOS';      Bootstrap = $false; Fields = @(
+                                @{ Key = 'IONOSKeyPrefix';Label = 'IONOS API Key Prefix';    Secure = $false },
+                                @{ Key = 'IONOSKeySecret';Label = 'IONOS API Key Secret';    Secure = $true }) }
     }
 }
 
