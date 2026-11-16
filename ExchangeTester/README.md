@@ -261,7 +261,7 @@ Hover a row for the raw response; **double-click** to view it in full (and copy 
 
 | Option | Description |
 |--------|-------------|
-| Ignore certificate errors | Bypasses TLS certificate validation — for on-premises Exchange with self-signed / untrusted certificates. (TLS trust failures also surface a hint to enable this.) |
+| Ignore certificate errors | Bypasses TLS certificate validation — for on-premises Exchange with self-signed / untrusted certificates. (TLS trust failures also surface a hint to enable this.) Applies per request only, never process-wide. Also allows TLS 1.0/1.1 for very old servers; unchecked, the tool uses TLS 1.2 only. |
 | Use SCP (domain-joined) | AutoConfiguration only: runs the AD Service Connection Point lookup first, like Outlook on domain-joined machines |
 
 ---

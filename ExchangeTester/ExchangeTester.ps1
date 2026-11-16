@@ -13,7 +13,7 @@
 #>
 
 # Einzige Stelle fuer die Versionsnummer; Build und Release-Tag lesen sie hier aus.
-$script:Version = '1.0.1'
+$script:Version = '1.0.2'
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -22,11 +22,9 @@ Add-Type -AssemblyName Microsoft.VisualBasic
 [System.Windows.Forms.Application]::EnableVisualStyles()
 [System.Windows.Forms.Application]::SetCompatibleTextRenderingDefault($false)
 
-# TLS 1.2 / 1.1 / 1.0 for maximum compatibility with older Exchange servers
-[System.Net.ServicePointManager]::SecurityProtocol =
-    [System.Net.SecurityProtocolType]::Tls12 -bor
-    [System.Net.SecurityProtocolType]::Tls11 -bor
-    [System.Net.SecurityProtocolType]::Tls
+# TLS 1.2 only. "Ignore certificate errors" is the one lax switch: only with it
+# do the test runspaces also allow TLS 1.1/1.0 for very old Exchange servers.
+[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
 
 #region ======================================================================
 #  FORM
@@ -217,6 +215,8 @@ $toolTip.SetToolTip($lblClientId, "Application (client) ID of your 'Exchange Tes
 $toolTip.SetToolTip($txtClientId, "Application (client) ID of your 'Exchange Tester' app registration in Azure AD.")
 $toolTip.SetToolTip($lblTenantId, "Directory (tenant) ID — GUID or domain, e.g. contoso.onmicrosoft.com.")
 $toolTip.SetToolTip($txtTenantId, "Directory (tenant) ID — GUID or domain, e.g. contoso.onmicrosoft.com.")
+$ignoreCertTip = "Accept untrusted / self-signed certificates on the probed servers and also allow TLS 1.0/1.1 for very old Exchange servers. Unchecked: TLS 1.2 only, certificates validated."
+$toolTip.SetToolTip($chkIgnoreCert, $ignoreCertTip)
 #endregion
 
 #region --- Separator + Progress bar (y adjusted dynamically by Update-Layout) ---
@@ -714,13 +714,11 @@ function Show-EndpointTestDialog {
     $uPs = [System.Management.Automation.PowerShell]::Create()
     $uPs.Runspace = $uRs
     [void]$uPs.AddScript({
-        if ($ignoreCert) {
-            [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
-        }
-        [System.Net.ServicePointManager]::SecurityProtocol =
-            [System.Net.SecurityProtocolType]::Tls12 -bor
-            [System.Net.SecurityProtocolType]::Tls11 -bor
-            [System.Net.SecurityProtocolType]::Tls
+        # Lax mode is per request, never process-wide (ServicePointManager)
+        $acceptAnyCert = [System.Net.Security.RemoteCertificateValidationCallback] { param($s, $c, $ch, $e) $true }
+        $tls = [System.Net.SecurityProtocolType]::Tls12
+        if ($ignoreCert) { $tls = $tls -bor [System.Net.SecurityProtocolType]::Tls11 -bor [System.Net.SecurityProtocolType]::Tls }
+        [System.Net.ServicePointManager]::SecurityProtocol = $tls
 
         foreach ($entry in $urlList) {
             if ($uSync.Cancel) { break }
@@ -730,6 +728,7 @@ function Show-EndpointTestDialog {
             $info   = ''
             try {
                 $req = [System.Net.HttpWebRequest]::Create($url)
+                if ($ignoreCert) { $req.ServerCertificateValidationCallback = $acceptAnyCert }
                 $req.Method            = "GET"
                 $req.AllowAutoRedirect = $false
                 $req.Timeout           = 10000
@@ -901,7 +900,14 @@ $script:TestScript = {
     $email      = $sync.Email
     $password   = $sync.Password
     $useWinAuth = $sync.UseWindowsAuth
+    $ignoreCert = $sync.IgnoreCert
     $domain     = ($email -split '@')[1]
+
+    # Lax mode is per request, never process-wide (ServicePointManager)
+    $acceptAnyCert = [System.Net.Security.RemoteCertificateValidationCallback] { param($s, $c, $ch, $e) $true }
+    $tls = [System.Net.SecurityProtocolType]::Tls12
+    if ($ignoreCert) { $tls = $tls -bor [System.Net.SecurityProtocolType]::Tls11 -bor [System.Net.SecurityProtocolType]::Tls }
+    [System.Net.ServicePointManager]::SecurityProtocol = $tls
 
     # Credentials
     $netCred = $null
@@ -927,6 +933,7 @@ $script:TestScript = {
         param([string]$url, [string]$authHeader = '')
         try {
             $req = [System.Net.HttpWebRequest]::Create($url)
+            if ($ignoreCert) { $req.ServerCertificateValidationCallback = $acceptAnyCert }
             $req.Method            = "POST"
             $req.ContentType       = "text/xml; charset=utf-8"
             $req.ContentLength     = $bodyBytes.Length
@@ -991,6 +998,7 @@ $script:TestScript = {
         param([string]$url)
         try {
             $req = [System.Net.HttpWebRequest]::Create($url)
+            if ($ignoreCert) { $req.ServerCertificateValidationCallback = $acceptAnyCert }
             $req.Method            = "GET"
             $req.AllowAutoRedirect = $false
             $req.Timeout           = 15000
@@ -2153,13 +2161,6 @@ $btnTest.Add_Click({
     }
 
 
-    # Certificate validation callback
-    if ($chkIgnoreCert.Checked) {
-        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
-    } else {
-        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $null
-    }
-
     # Reset UI
     $form.Text = "Test E-Mail AutoConfiguration  —  $email"
     $rtbLog.Clear()
@@ -2182,6 +2183,7 @@ $btnTest.Add_Click({
         ClientId       = $txtClientId.Text.Trim()
         TenantId       = $txtTenantId.Text.Trim()
         UseSCP         = $chkUseSCP.Checked
+        IgnoreCert     = $chkIgnoreCert.Checked
         Cancel          = $false
         Done            = $false
         Xml             = $null
@@ -2488,7 +2490,6 @@ $form.Add_FormClosing({
     if ($script:PollTimer)   { $script:PollTimer.Stop() }
     try { $script:CurrentPS.Dispose() }   catch {}
     try { $script:CurrentRS.Close();  $script:CurrentRS.Dispose() } catch {}
-    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $null
 })
 
 #region ======================================================================
@@ -2611,6 +2612,7 @@ $hybForm.Controls.Add($hybBtnCancel)
 $toolTip.SetToolTip($hybTxtEmail, "Primary SMTP address of an on-premises mailbox. Used for AutoDiscover-based endpoint discovery when the FQDN field is empty.")
 $toolTip.SetToolTip($hybTxtFqdn,  "External FQDN of the on-prem MRS endpoint, e.g. mail.contoso.com (the host serving /EWS/mrsproxy.svc). Leave empty to discover it via AutoDiscover.")
 $toolTip.SetToolTip($hybTxtUser,  "On-premises account, DOMAIN\user or UPN. Leave empty to use the logged-in Windows user (local probes only).")
+$toolTip.SetToolTip($hybChkIgnoreCert, $ignoreCertTip)
 $toolTip.SetToolTip($hybChkExo,   "Additionally run Test-MigrationServerAvailability inside Exchange Online (AdminAPI, device code sign-in as an Exchange admin). This is the only check that proves Microsoft's datacenter can reach the endpoint.")
 #endregion
 
@@ -2724,13 +2726,13 @@ $script:HybridTestScript = {
         $sync.RowQueue.Enqueue(@{ Step = $step; Result = $result; Details = $details })
     }
 
-    [System.Net.ServicePointManager]::SecurityProtocol =
-        [System.Net.SecurityProtocolType]::Tls12 -bor
-        [System.Net.SecurityProtocolType]::Tls11 -bor
-        [System.Net.SecurityProtocolType]::Tls
-    if ($sync.IgnoreCert) {
-        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
-    }
+    # Lax mode is per request, never process-wide (ServicePointManager). The
+    # TLS probe below needs the accept-all callback regardless of the checkbox.
+    $ignoreCert    = [bool]$sync.IgnoreCert
+    $acceptAnyCert = [System.Net.Security.RemoteCertificateValidationCallback] { param($s, $c, $ch, $e) $true }
+    $tls = [System.Net.SecurityProtocolType]::Tls12
+    if ($ignoreCert) { $tls = $tls -bor [System.Net.SecurityProtocolType]::Tls11 -bor [System.Net.SecurityProtocolType]::Tls }
+    [System.Net.ServicePointManager]::SecurityProtocol = $tls
 
     $netCred = $null
     if ($user) {
@@ -2749,6 +2751,7 @@ $script:HybridTestScript = {
         param([string]$url, $cred)
         try {
             $req = [System.Net.HttpWebRequest]::Create($url)
+            if ($ignoreCert) { $req.ServerCertificateValidationCallback = $acceptAnyCert }
             $req.Method            = "GET"
             $req.AllowAutoRedirect = $false
             $req.Timeout           = 20000
@@ -2866,6 +2869,7 @@ $script:HybridTestScript = {
             param([string]$url)
             try {
                 $req = [System.Net.HttpWebRequest]::Create($url)
+                if ($ignoreCert) { $req.ServerCertificateValidationCallback = $acceptAnyCert }
                 $req.Method            = "POST"
                 $req.ContentType       = "text/xml; charset=utf-8"
                 $req.ContentLength     = $adBytes.Length
@@ -3001,7 +3005,7 @@ $script:HybridTestScript = {
             if (-not $tcp2.ConnectAsync($fqdn, 443).Wait(10000)) { $tcp2.Close(); throw "TCP connect timeout" }
             # Accept-all callback: the handshake must succeed so the certificate
             # can be captured; trust and name are validated manually below.
-            $ssl = New-Object System.Net.Security.SslStream($tcp2.GetStream(), $false, { $true })
+            $ssl = New-Object System.Net.Security.SslStream($tcp2.GetStream(), $false, $acceptAnyCert)
             $ssl.AuthenticateAsClient($fqdn)
             $sslProto = $ssl.SslProtocol.ToString()
             $cert2 = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($ssl.RemoteCertificate)
@@ -3426,12 +3430,6 @@ $script:HybridTestScript = {
         }
     }
 
-    # Reset the global validation callback if this runspace set it — the
-    # scriptblock delegate dies with the runspace and would break later probes
-    if ($sync.IgnoreCert) {
-        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $null
-    }
-
     & $setPct 100
     $sync.Done = $true
 }
@@ -3509,10 +3507,6 @@ $hybBtnTest.Add_Click({
         return
     }
 
-    # Clear any leftover global callback; the test runspace sets its own when
-    # "Ignore certificate errors" is checked
-    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $null
-
     # Reset UI
     $hybForm.Text = "Hybrid Deployment  —  Migration Endpoint (MRS Proxy)"
     $hybRtbLog.Clear()
@@ -3588,7 +3582,6 @@ $hybForm.Add_FormClosing({
     if ($script:HybPollTimer) { $script:HybPollTimer.Stop() }
     try { $script:HybPS.Dispose() } catch {}
     try { $script:HybRS.Close(); $script:HybRS.Dispose() } catch {}
-    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $null
 })
 
 #endregion ===================================================================
@@ -3711,6 +3704,7 @@ $hcChkIgnore.Location = New-Object System.Drawing.Point(134, 68)
 $hcChkIgnore.Size     = New-Object System.Drawing.Size(220, 20)
 $hcChkIgnore.TabIndex = 2
 $hcForm.Controls.Add($hcChkIgnore)
+$toolTip.SetToolTip($hcChkIgnore, $ignoreCertTip)
 
 $hcLblInfo = New-Object System.Windows.Forms.Label
 $hcLblInfo.Text      = "Probes on-prem + Exchange Online endpoints with the current Windows user."
@@ -4142,6 +4136,7 @@ $fbForm.Controls.Add($fbLblExoHint)
 $fbChkIgnore = New-Object System.Windows.Forms.CheckBox
 $fbChkIgnore.Text = "Ignore certificate errors"; $fbChkIgnore.Location = New-Object System.Drawing.Point(152, 68); $fbChkIgnore.Size = New-Object System.Drawing.Size(220, 20); $fbChkIgnore.TabIndex = 2
 $fbForm.Controls.Add($fbChkIgnore)
+$toolTip.SetToolTip($fbChkIgnore, "Accept untrusted / self-signed certificates on the probed EWS endpoints (WinHTTP; TLS versions follow the Windows settings).")
 
 $fbBtnTest = New-Object System.Windows.Forms.Button
 $fbBtnTest.Text = "Test"; $fbBtnTest.Location = New-Object System.Drawing.Point(692, 64); $fbBtnTest.Size = New-Object System.Drawing.Size(76, 26); $fbBtnTest.Anchor = $fbAnchTR; $fbBtnTest.TabIndex = 3
