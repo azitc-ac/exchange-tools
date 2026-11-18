@@ -16,6 +16,7 @@ löschen. Beide laufen auf dem Exchange-Server, beide ändern nichts ohne Rückf
 .\Repair-ExchangeSmtpCertificate.ps1 -Thumbprint <40 Hex>   # gezielt ein Zertifikat behandeln
 .\Repair-ExchangeSmtpCertificate.ps1                        # Auswahl im Dialog
 .\Repair-ExchangeSmtpCertificate.ps1 -KeepDefaultSmtp       # SMTP setzen, Standard-SMTP-Zertifikat behalten
+.\Repair-ExchangeSmtpCertificate.ps1 -RestoreSelfSignedDefault  # Standard zurück auf das selbstsignierte (oder neu anlegen)
 ```
 
 Der Ablauf ist immer derselbe: Ist-Zustand aufnehmen → Diagnose → Zusammenfassung → Behebung nur
@@ -38,22 +39,38 @@ Geprüft und behoben werden die Ursachen, die in der Praxis dahinterstecken:
    ob es überschrieben werden soll (siehe unten).
 4. **Receive-Connectors mit fest eingetragenem `TlsCertificateName`**, der weiter auf das alte
    Zertifikat zeigt.
+5. **Die Website „Exchange Back End“ (Port 444)** hängt an einem abgelaufenen oder gelöschten
+   Zertifikat – typisch, wenn das selbstsignierte Zertifikat nach 5 Jahren abläuft. Das Skript
+   bindet sie auf Wunsch an ein gültiges selbstsigniertes Zertifikat um (nur Port 444).
 
-### Standard-SMTP-Zertifikat überschreiben – ja oder nein?
+### Standard-SMTP-Zertifikat – was soll es sein?
 
 `Enable-ExchangeCertificate -Services SMTP` fragt *„Overwrite the existing default SMTP
 certificate?“*. **Ja** (oder `-Force`) macht das neue Zertifikat zum internen Transportzertifikat
-für TLS zwischen den Exchange-Servern. Für eingehendes STARTTLS aus dem Internet ist das nicht
-nötig – dort wählt Exchange über FQDN bzw. `TlsCertificateName` des Connectors.
+für TLS zwischen den Exchange-Servern. Für SMTP mit Exchange Online bzw. aus dem Internet ist das
+nicht nötig – dort wählt Exchange über `TlsCertificateName` bzw. FQDN des Connectors.
+
+Microsoft (Cmdlet-Referenz zu `Enable-ExchangeCertificate`): *„Typically, you don't need to
+replace the default certificate with a certificate from a commercial CA for the purpose of
+encrypting internal SMTP traffic.“* Das Skript empfiehlt deshalb:
 
 | Der Standard zeigt auf … | Empfehlung |
 |---|---|
-| das gültige selbstsignierte Exchange-Zertifikat | **Nein** – behalten, es hängt nicht am Erneuerungszyklus |
-| das alte öffentliche Zertifikat, das gerade ersetzt wird | **Ja** – sonst bleibt der Standard auf dem alten hängen |
-| ein Zertifikat, das abgelaufen oder nicht mehr im Speicher ist | **Ja** |
+| das gültige selbstsignierte Exchange-Zertifikat | **behalten** |
+| ein öffentliches Zertifikat, und ein gültiges selbstsigniertes ist da | **zurück auf das selbstsignierte** |
+| ein öffentliches Zertifikat, kein gültiges selbstsigniertes da | **aufs neue Zielzertifikat mitnehmen** |
+| ein abgelaufenes oder gelöschtes Zertifikat (Ereignis 12013) | **selbstsigniertes nehmen – oder neu anlegen** |
 
-Die Empfehlung ist die Regel aus der Praxis, nicht aus einer Microsoft-Quelle. Mit
-`-KeepDefaultSmtp` bleibt der Standard in jedem Fall unverändert.
+Beim Aktivieren fragt das Skript mit dieser Empfehlung: behalten, Zielzertifikat, vorhandenes
+selbstsigniertes oder neues selbstsigniertes. `-KeepDefaultSmtp` lässt den Standard unverändert,
+`-RestoreSelfSignedDefault` holt ihn zurück auf das selbstsignierte Zertifikat (bevorzugt das am
+Back End gebundene) – auch wenn sonst nichts zu beheben ist.
+
+**Nach 5 Jahren:** Microsoft erneuert per `Get-ExchangeCertificate <Thumbprint> |
+New-ExchangeCertificate -Force -PrivateKeyExportable $true`. Der Klon übernimmt aber die Dienste
+des alten Zertifikats, bei IIS womöglich auch die Bindung der vorderen Website. Das Skript legt ein
+neues **ohne** Dienste an (`CN=<Server>`, SAN Server und FQDN, wie Setup) und weist SMTP und Port
+444 gezielt zu.
 
 ## Remove-SupersededExchangeCertificate
 

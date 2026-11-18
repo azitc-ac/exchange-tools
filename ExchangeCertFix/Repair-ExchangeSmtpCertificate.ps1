@@ -20,7 +20,11 @@
       6. Transport services holding a handle on the previous certificate.
       7. Internal transport certificate pointing to a certificate that is gone from
          the store or expired (transport event 12013 "could not load the certificate
-         with thumbprint ... from the personal store").
+         with thumbprint ... from the personal store"). Fix: make the target the
+         default, restore a valid self-signed Exchange certificate as default
+         (Microsoft's recommendation), or create a new self-signed one.
+      8. "Exchange Back End" site (port 444) bound to a certificate that is expired
+         or gone - typically after the self-signed certificate reached its 5 years.
 
     The script is read-only by default. Every write operation is presented as an
     explicit prompt. Nothing is changed without confirmation.
@@ -40,6 +44,12 @@
     Enables SMTP on the target certificate WITHOUT making it the internal transport
     (default SMTP) certificate. Without this switch the script recommends Yes or No
     based on the current default and asks.
+
+.PARAMETER RestoreSelfSignedDefault
+    Makes a valid self-signed Exchange certificate (CN=<server>) the internal transport
+    certificate again - or creates a new one if none is valid. Runs even if no other
+    issue was found. Microsoft: "Typically, you don't need to replace the default
+    certificate with a certificate from a commercial CA".
 
 .EXAMPLE
     .\Repair-ExchangeSmtpCertificate.ps1
@@ -66,11 +76,18 @@ param(
     [switch]$DiagnoseOnly,
 
     [Parameter(Mandatory = $false)]
-    [switch]$KeepDefaultSmtp
+    [switch]$KeepDefaultSmtp,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$RestoreSelfSignedDefault
 )
 
+if ($KeepDefaultSmtp -and $RestoreSelfSignedDefault) {
+    throw '-KeepDefaultSmtp and -RestoreSelfSignedDefault exclude each other.'
+}
+
 # Einzige Stelle fuer die Versionsnummer; Build und Release-Tag lesen sie hier aus.
-$script:Version = '1.1.0'
+$script:Version = '1.2.0'
 
 
 #region ---------------------------------------------------------- Helper functions
@@ -322,39 +339,114 @@ function Get-InternalTransportCertificate {
 
 function Get-DefaultSmtpRecommendation {
     <#
-        Decides whether enabling SMTP on the target should also overwrite the internal
-        transport certificate. Pure function (no Exchange calls) so it can be tested.
-          Keep           - current default is a valid self-signed Exchange certificate
-          Overwrite      - current default is missing, gone from the store, expired, or a
-                           CA-issued certificate (normally the one being replaced)
-          AlreadyDefault - the target already is the default
-          Unknown        - the default could not be read
+        What to do with the internal transport (default SMTP) certificate. Pure function
+        (no Exchange calls) so it can be tested.
+          Keep              - current default is a valid self-signed Exchange certificate
+          RestoreSelfSigned - default is CA-issued or broken, and a valid self-signed
+                              Exchange certificate exists (Microsoft's recommendation)
+          CreateSelfSigned  - default is broken and no valid self-signed one exists
+          Overwrite         - default is a valid CA-issued certificate and no valid
+                              self-signed one exists: move it to the target
+          AlreadyDefault    - the target already is the default (and it is self-signed,
+                              or no self-signed alternative exists)
+          Broken            - $true when the current default is missing, gone or expired
     #>
     param(
         $Current,
         [Parameter(Mandatory = $true)]$Target,
+        [bool]$SelfSignedAvailable = $false,
         [datetime]$Now = (Get-Date)
     )
-    $r = { param($a, $why) [PSCustomObject]@{ Action = $a; Reason = $why } }
-    if ($null -eq $Current) {
-        return & $r 'Overwrite' 'No internal transport certificate is set for this server.'
+    $r = { param($a, $why, $broken) [PSCustomObject]@{ Action = $a; Reason = $why; Broken = [bool]$broken } }
+    if ($Current -and $Current.Error) {
+        return & $r 'Unknown' "The internal transport certificate could not be read: $($Current.Error)" $false
     }
-    if ($Current.Error) {
-        return & $r 'Unknown' "The internal transport certificate could not be read: $($Current.Error)"
+
+    $why = $null
+    if ($null -eq $Current)            { $why = 'No internal transport certificate is set for this server.' }
+    elseif (-not $Current.InStore)     { $why = "The default points to $($Current.Thumbprint), which is no longer in the local store (transport event 12013)." }
+    elseif ($Current.NotAfter -lt $Now){ $why = "The default $($Current.Thumbprint) expired on $($Current.NotAfter.ToString('yyyy-MM-dd'))." }
+    if ($why) {
+        if ($SelfSignedAvailable) { return & $r 'RestoreSelfSigned' "$why A valid self-signed Exchange certificate exists - make it the default." $true }
+        return & $r 'CreateSelfSigned' "$why No valid self-signed Exchange certificate exists - create a new one." $true
     }
-    if ($Current.Thumbprint -eq $Target.Thumbprint) {
-        return & $r 'AlreadyDefault' 'The target already is the internal transport certificate.'
+
+    if ($Current.IsSelfSigned) {
+        if ($Current.Thumbprint -eq $Target.Thumbprint) { return & $r 'AlreadyDefault' 'The target already is the internal transport certificate.' $false }
+        return & $r 'Keep' 'The default is a valid self-signed Exchange certificate. Keep it for TLS between Exchange servers; it does not follow the public renewal cycle.' $false
     }
-    if (-not $Current.InStore) {
-        return & $r 'Overwrite' "The default points to $($Current.Thumbprint), which is no longer in the local store (transport event 12013)."
+
+    # Valid, CA-issued default.
+    if ($SelfSignedAvailable) {
+        return & $r 'RestoreSelfSigned' "The default is the CA-issued certificate $($Current.Subject). Microsoft: a commercial certificate is typically not needed for internal SMTP - a valid self-signed Exchange certificate exists, make it the default again." $false
     }
-    if ($Current.NotAfter -lt $Now) {
-        return & $r 'Overwrite' "The default $($Current.Thumbprint) expired on $($Current.NotAfter.ToString('yyyy-MM-dd'))."
+    if ($Current.Thumbprint -eq $Target.Thumbprint) { return & $r 'AlreadyDefault' 'The target already is the internal transport certificate.' $false }
+    return & $r 'Overwrite' "The default is the CA-issued certificate $($Current.Subject) - usually the one being replaced, and no valid self-signed alternative exists. Move the default to the target." $false
+}
+
+function ConvertFrom-NetshSslCert {
+    <#
+        Parses "netsh http show sslcert" output into bindings (IpPort, Thumbprint,
+        AppId). Pure function so it can be tested; field names are matched loosely
+        because netsh labels are localized only in parts.
+    #>
+    param([string]$Text)
+    $result = @()
+    $cur = $null
+    foreach ($line in ($Text -split "`r?`n")) {
+        if ($line -match '^\s*(IP:port|Hostname:port)\s*:\s*(\S+)') {
+            if ($cur) { $result += [PSCustomObject]$cur }
+            $cur = [ordered]@{ IpPort = $Matches[2]; Thumbprint = $null; AppId = $null }
+        }
+        elseif ($cur -and $line -match '^\s*Certificate Hash\s*:\s*([0-9a-fA-F]{40})') { $cur.Thumbprint = $Matches[1].ToUpper() }
+        elseif ($cur -and $line -match '^\s*Application ID\s*:\s*(\{[0-9a-fA-F-]{36}\})') { $cur.AppId = $Matches[1] }
     }
-    if (-not $Current.IsSelfSigned) {
-        return & $r 'Overwrite' "The default is the CA-issued certificate $($Current.Subject) - usually the one being replaced. Keeping it leaves the default on the old certificate."
+    if ($cur) { $result += [PSCustomObject]$cur }
+    return $result
+}
+
+function Get-BackendBinding {
+    <#
+        HTTPS bindings of the "Exchange Back End" site (port 444) with the state of the
+        bound certificate.
+    #>
+    $text = (netsh http show sslcert 2>$null | Out-String)
+    $bindings = @(ConvertFrom-NetshSslCert -Text $text | Where-Object { $_.IpPort -match ':444$' })
+    foreach ($b in $bindings) {
+        $c = if ($b.Thumbprint) { Get-Item -LiteralPath "Cert:\LocalMachine\My\$($b.Thumbprint)" -ErrorAction SilentlyContinue }
+        $b | Add-Member -NotePropertyName InStore  -NotePropertyValue ([bool]$c)
+        $b | Add-Member -NotePropertyName NotAfter -NotePropertyValue $(if ($c) { $c.NotAfter } else { $null })
+        $b | Add-Member -NotePropertyName Subject  -NotePropertyValue $(if ($c) { $c.Subject } else { $null })
     }
-    return & $r 'Keep' 'The default is a valid self-signed Exchange certificate. Keep it for TLS between Exchange servers; it does not follow the public renewal cycle.'
+    return $bindings
+}
+
+function Get-SelfSignedCandidate {
+    <#
+        A valid self-signed Exchange server certificate (CN=<server>, private key,
+        more than 30 days left). Prefers the one bound to the Exchange Back End site.
+    #>
+    param([string[]]$PreferThumbprint = @())
+    $limit = (Get-Date).AddDays(30)
+    $all = @(Get-ExchangeCertificate -ErrorAction SilentlyContinue | Where-Object {
+        $_.IsSelfSigned -and $_.Subject -eq "CN=$env:COMPUTERNAME" -and $_.HasPrivateKey -and $_.NotAfter -gt $limit
+    })
+    if ($all.Count -eq 0) { return $null }
+    $preferred = @($all | Where-Object { $PreferThumbprint -contains $_.Thumbprint })
+    if ($preferred.Count -gt 0) { return $preferred[0] }
+    return ($all | Sort-Object NotAfter -Descending | Select-Object -First 1)
+}
+
+function New-SelfSignedExchangeCertificate {
+    <#
+        Creates a new self-signed Exchange certificate like Setup does (CN=<server>,
+        SAN server name + FQDN, 5 years), but WITHOUT services - so it cannot take
+        over the IIS front end binding. Services are assigned explicitly afterwards.
+    #>
+    $fqdn = (Get-ExchangeServer -Identity $env:COMPUTERNAME -ErrorAction Stop).Fqdn
+    $names = @($env:COMPUTERNAME, $fqdn) | Select-Object -Unique
+    return New-ExchangeCertificate -SubjectName "CN=$env:COMPUTERNAME" -DomainName $names `
+        -FriendlyName 'Microsoft Exchange' -Services None -PrivateKeyExportable $true -Force -ErrorAction Stop
 }
 
 function Get-SmtpCertificateSnapshot {
@@ -368,6 +460,7 @@ function Get-SmtpCertificateSnapshot {
         SmtpCertificates   = @()
         ReceiveConnectors  = @()
         InternalTransport  = Get-InternalTransportCertificate
+        Backend            = @(Get-BackendBinding)
     }
 
     $snapshot.SmtpCertificates = @(
@@ -419,6 +512,14 @@ function Show-SmtpCertificateSnapshot {
         if (-not $it.InStore)              { $flags += 'NOT IN STORE' }
         if ($it.NotAfter -lt (Get-Date))   { $flags += 'EXPIRED' }
         Write-Host ("  {0}  {1}  until {2}  {3}" -f $it.Thumbprint, $it.Subject, $it.NotAfter.ToString('yyyy-MM-dd'), ($flags -join ', '))
+    }
+    Write-Host ''
+
+    Write-Host 'Exchange Back End site (port 444) binding:' -ForegroundColor White
+    if ($Snapshot.Backend.Count -eq 0) { Write-Host '  <no binding on port 444 found>' -ForegroundColor Yellow }
+    foreach ($b in $Snapshot.Backend) {
+        $state = if (-not $b.InStore) { 'NOT IN STORE' } elseif ($b.NotAfter -lt (Get-Date)) { 'EXPIRED' } else { "until $($b.NotAfter.ToString('yyyy-MM-dd'))" }
+        Write-Host ("  {0}  {1}  {2}  {3}" -f $b.IpPort, $b.Thumbprint, $b.Subject, $state)
     }
     Write-Host ''
 
@@ -673,20 +774,35 @@ else {
 
 # --- Check 8: internal transport (default SMTP) certificate ------------------
 $internalTransport = $before.InternalTransport
-$defaultAdvice     = Get-DefaultSmtpRecommendation -Current $internalTransport -Target $target
-switch ($defaultAdvice.Action) {
-    'AlreadyDefault' { Write-Ok   $defaultAdvice.Reason }
-    'Keep'           { Write-Ok   "Internal transport certificate is fine. $($defaultAdvice.Reason)" }
-    'Unknown'        { Write-Warn $defaultAdvice.Reason }
-    'Overwrite'      {
-        if ($null -eq $internalTransport -or -not $internalTransport.InStore -or $internalTransport.NotAfter -lt (Get-Date)) {
-            Write-Problem "Internal transport certificate is broken. $($defaultAdvice.Reason)"
-            [void]$issues.Add('InternalTransportCertBroken')
-        }
-        else {
-            Write-Info "Internal transport certificate: $($defaultAdvice.Reason)"
-        }
+$backendThumbs     = @($before.Backend | ForEach-Object { $_.Thumbprint })
+$selfSignedCand    = Get-SelfSignedCandidate -PreferThumbprint $backendThumbs
+$defaultAdvice     = Get-DefaultSmtpRecommendation -Current $internalTransport -Target $target -SelfSignedAvailable ([bool]$selfSignedCand)
+if ($defaultAdvice.Broken) {
+    Write-Problem "Internal transport certificate is broken. $($defaultAdvice.Reason)"
+    [void]$issues.Add('InternalTransportCertBroken')
+}
+elseif ($defaultAdvice.Action -in @('AlreadyDefault', 'Keep')) { Write-Ok "Internal transport certificate: $($defaultAdvice.Reason)" }
+elseif ($defaultAdvice.Action -eq 'Unknown')                  { Write-Warn $defaultAdvice.Reason }
+else {
+    Write-Info "Internal transport certificate: $($defaultAdvice.Reason)"
+    if ($defaultAdvice.Action -eq 'RestoreSelfSigned') {
+        Write-Info "Run with -RestoreSelfSignedDefault to switch the default to $($selfSignedCand.Thumbprint)."
     }
+}
+
+# --- Check 9: Exchange Back End binding (port 444) --------------------------
+$brokenBackend = @($before.Backend | Where-Object { -not $_.InStore -or $_.NotAfter -lt (Get-Date) })
+if ($before.Backend.Count -eq 0) {
+    Write-Warn 'No HTTPS binding on port 444 found (Exchange Back End). Not checked further.'
+}
+elseif ($brokenBackend.Count -gt 0) {
+    foreach ($b in $brokenBackend) {
+        Write-Problem "Exchange Back End binding $($b.IpPort) uses $($b.Thumbprint), which is $(if (-not $b.InStore) { 'no longer in the store' } else { 'expired' })."
+    }
+    [void]$issues.Add('BackendCertBroken')
+}
+else {
+    Write-Ok 'Exchange Back End (port 444) is bound to a valid certificate.'
 }
 
 # --- Summary ------------------------------------------------------------------
@@ -704,7 +820,7 @@ if ($DiagnoseOnly) {
     return
 }
 
-if ($issues.Count -eq 0) {
+if ($issues.Count -eq 0 -and -not $RestoreSelfSignedDefault) {
     Write-Info 'Nothing to remediate.'
     $after = Get-SmtpCertificateSnapshot
     Show-SmtpCertificateSnapshot -Snapshot $after -Label 'AFTER (unchanged)'
@@ -901,15 +1017,15 @@ foreach ($stale in $staleCerts) {
     }
 }
 
-# --- Remediation 4: enable SMTP on the target certificate --------------------
-$activeCert = Get-ExchangeCertificate -Thumbprint $activeThumbprint -ErrorAction SilentlyContinue
-$needEnable  = $activeCert -and $activeCert.Services -notmatch 'SMTP'
-$needDefault = $activeCert -and ($issues -contains 'InternalTransportCertBroken')
+# --- Remediation 4: SMTP on the target + internal transport (default) certificate
+$activeCert  = Get-ExchangeCertificate -Thumbprint $activeThumbprint -ErrorAction SilentlyContinue
+$needEnable  = [bool]($activeCert -and $activeCert.Services -notmatch 'SMTP')
+$needDefault = [bool]($activeCert -and (($issues -contains 'InternalTransportCertBroken') -or $RestoreSelfSignedDefault))
 
 if ($needEnable -or $needDefault) {
 
-    # Services: ask only if SMTP is missing; otherwise re-enable SMTP just to move the default.
-    $services = 'SMTP'
+    # Services: asked only if SMTP is missing on the target.
+    $services = $null
     if ($needEnable) {
         Write-Host ''
         Write-Host 'Which services should be enabled on the target certificate?' -ForegroundColor White
@@ -930,51 +1046,66 @@ if ($needEnable -or $needDefault) {
         }
     }
 
-    # Default SMTP certificate: overwrite or keep?
-    $advice = Get-DefaultSmtpRecommendation -Current (Get-InternalTransportCertificate) -Target $activeCert
-    if ($advice.Action -eq 'AlreadyDefault') {
-        $overwriteDefault = $false
-    }
-    elseif ($KeepDefaultSmtp) {
-        $overwriteDefault = $false
+    # Default SMTP certificate: keep / target / restore self-signed / new self-signed
+    $selfSigned = Get-SelfSignedCandidate -PreferThumbprint @($before.Backend | ForEach-Object { $_.Thumbprint })
+    $advice     = Get-DefaultSmtpRecommendation -Current (Get-InternalTransportCertificate) -Target $activeCert -SelfSignedAvailable ([bool]$selfSigned)
+
+    if ($KeepDefaultSmtp) {
+        $defaultMode = 'keep'
         Write-Info '-KeepDefaultSmtp: the internal transport certificate will NOT be changed.'
-        if ($advice.Action -eq 'Overwrite') { Write-Warn "Note: $($advice.Reason)" }
+        if ($advice.Broken) { Write-Warn "Note: $($advice.Reason)" }
+    }
+    elseif ($RestoreSelfSignedDefault) {
+        $defaultMode = if ($selfSigned) { 'selfsigned' } else { 'newselfsigned' }
+    }
+    elseif ($advice.Action -eq 'AlreadyDefault' -and -not $needDefault) {
+        $defaultMode = 'keep'
     }
     else {
-        $recommendYes = ($advice.Action -eq 'Overwrite')
+        $options = [ordered]@{}
+        if (-not $advice.Broken) { $options['k'] = 'Keep the current default' }
+        $options['t'] = 'Make the TARGET certificate the default'
+        if ($selfSigned) { $options['s'] = "Make the self-signed $($selfSigned.Thumbprint) (until $($selfSigned.NotAfter.ToString('yyyy-MM-dd'))) the default" }
+        $options['n'] = 'Create a NEW self-signed Exchange certificate (5 years) and make it the default'
+
+        $recommended = switch ($advice.Action) {
+            'Keep'              { 'k' }
+            'AlreadyDefault'    { 'k' }
+            'Overwrite'         { 't' }
+            'RestoreSelfSigned' { 's' }
+            'CreateSelfSigned'  { 'n' }
+            default             { if ($options.Contains('k')) { 'k' } else { 't' } }
+        }
+
         Write-Host ''
-        Write-Host 'Make the target the internal transport (default SMTP) certificate?' -ForegroundColor White
-        Write-Host "  Recommendation: $(if ($recommendYes) { 'YES' } else { 'NO' }) - $($advice.Reason)"
+        Write-Host 'Internal transport (default SMTP) certificate:' -ForegroundColor White
+        Write-Host "  Recommendation: [$recommended] - $($advice.Reason)"
         Write-Host '  It is used for TLS between Exchange servers. Inbound STARTTLS from the internet'
         Write-Host '  is chosen by connector FQDN / TlsCertificateName and does not need it.'
+        foreach ($k in $options.Keys) { Write-Host "  [$k] $($options[$k])" }
         do {
-            $answer = Read-Host "Overwrite default? [y/n] (Enter = $(if ($recommendYes) { 'y' } else { 'n' }))"
-            if ([string]::IsNullOrWhiteSpace($answer)) { $answer = $(if ($recommendYes) { 'y' } else { 'n' }) }
-        } while ($answer -notin @('y', 'n'))
-        $overwriteDefault = ($answer -eq 'y')
+            $answer = Read-Host "Selection [$(@($options.Keys) -join '/')] (Enter = $recommended)"
+            if ([string]::IsNullOrWhiteSpace($answer)) { $answer = $recommended }
+        } while (-not $options.Contains($answer))
+        $defaultMode = switch ($answer) { 'k' { 'keep' } 't' { 'target' } 's' { 'selfsigned' } 'n' { 'newselfsigned' } }
     }
 
-    if ($needDefault -and -not $needEnable -and -not $overwriteDefault) { $services = $null }
-
-    if ($services) {
-        $cmd    = "Enable-ExchangeCertificate -Thumbprint $activeThumbprint -Services $services$(if ($overwriteDefault) { ' -Force' })"
-        $impact = if ($overwriteDefault) {
-            'The target becomes the internal transport (default SMTP) certificate (-Force answers the overwrite question with Yes).'
-        } else {
-            'The internal transport certificate stays as it is. Exchange will ask "Overwrite the existing default SMTP certificate?" - answer N. SMTP and the NETWORK SERVICE key ACL are applied either way.'
+    # Step A: SMTP on the target. -Force only if the target shall become the default;
+    # for self-signed modes the default is moved explicitly in step B right after.
+    if ($needEnable -and $services) {
+        $useForce = ($defaultMode -ne 'keep')
+        $cmd    = "Enable-ExchangeCertificate -Thumbprint $activeThumbprint -Services $services$(if ($useForce) { ' -Force' })"
+        $impact = switch ($defaultMode) {
+            'target' { 'The target becomes the internal transport (default SMTP) certificate (-Force answers the overwrite question with Yes).' }
+            'keep'   { 'The internal transport certificate stays as it is. Exchange will ask "Overwrite the existing default SMTP certificate?" - answer N. SMTP and the NETWORK SERVICE key ACL are applied either way.' }
+            default  { 'The target briefly becomes the default; the next step moves the default to the self-signed certificate.' }
         }
         if ($services -match 'IIS') { $impact += ' The IIS binding for the Default Web Site will be replaced.' }
 
-        $ok = Confirm-Write -Action "Enable services '$services' on the target certificate" -Detail $cmd -Impact $impact
-
-        if ($ok) {
+        if (Confirm-Write -Action "Enable services '$services' on the target certificate" -Detail $cmd -Impact $impact) {
             try {
-                if ($overwriteDefault) {
-                    Enable-ExchangeCertificate -Thumbprint $activeThumbprint -Services $services -Force -ErrorAction Stop
-                }
-                else {
-                    Enable-ExchangeCertificate -Thumbprint $activeThumbprint -Services $services -ErrorAction Stop
-                }
+                if ($useForce) { Enable-ExchangeCertificate -Thumbprint $activeThumbprint -Services $services -Force -ErrorAction Stop }
+                else           { Enable-ExchangeCertificate -Thumbprint $activeThumbprint -Services $services -ErrorAction Stop }
             }
             catch {
                 # Measured: without -Force the overwrite question comes AFTER SMTP has been
@@ -984,11 +1115,90 @@ if ($needEnable -or $needDefault) {
             $check = Get-ExchangeCertificate -Thumbprint $activeThumbprint -ErrorAction SilentlyContinue
             if ($check -and $check.Services -match 'SMTP') {
                 Write-Ok "Services now on $activeThumbprint : $($check.Services)"
-                Add-ChangeLogEntry "Enabled services '$services' on $activeThumbprint (overwrite default: $overwriteDefault)"
+                Add-ChangeLogEntry "Enabled services '$services' on $activeThumbprint (default mode: $defaultMode)"
                 $restartRequired = $true
             }
             else {
                 Write-Problem "SMTP is not set on $activeThumbprint after Enable-ExchangeCertificate."
+            }
+        }
+    }
+    elseif ($defaultMode -eq 'target') {
+        # SMTP already present - only move the default.
+        if (Confirm-Write -Action 'Make the target the internal transport certificate' `
+                -Detail "Enable-ExchangeCertificate -Thumbprint $activeThumbprint -Services SMTP -Force" `
+                -Impact 'The target becomes the internal transport (default SMTP) certificate.') {
+            try {
+                Enable-ExchangeCertificate -Thumbprint $activeThumbprint -Services SMTP -Force -ErrorAction Stop
+                Add-ChangeLogEntry "Made $activeThumbprint the internal transport certificate"
+                $restartRequired = $true
+            }
+            catch { Write-Problem "Enable-ExchangeCertificate failed: $($_.Exception.Message)" }
+        }
+    }
+
+    # Step B: self-signed certificate as default (existing or new).
+    if ($defaultMode -eq 'newselfsigned') {
+        if (Confirm-Write -Action 'Create a new self-signed Exchange certificate' `
+                -Detail "New-ExchangeCertificate -SubjectName CN=$env:COMPUTERNAME -DomainName <server>,<fqdn> -Services None -PrivateKeyExportable `$true" `
+                -Impact 'Adds a certificate valid for 5 years. -Services None: it takes over nothing on its own (no IIS front end binding).') {
+            try {
+                $selfSigned = New-SelfSignedExchangeCertificate
+                Write-Ok "Created self-signed certificate $($selfSigned.Thumbprint) (until $($selfSigned.NotAfter.ToString('yyyy-MM-dd')))."
+                Add-ChangeLogEntry "Created self-signed certificate $($selfSigned.Thumbprint)"
+            }
+            catch {
+                Write-Problem "New-ExchangeCertificate failed: $($_.Exception.Message)"
+                $selfSigned = $null
+            }
+        }
+        else { $selfSigned = $null }
+    }
+
+    if ($defaultMode -in @('selfsigned', 'newselfsigned') -and $selfSigned) {
+        if (Confirm-Write -Action 'Make the self-signed certificate the internal transport certificate' `
+                -Detail "Enable-ExchangeCertificate -Thumbprint $($selfSigned.Thumbprint) -Services SMTP -Force" `
+                -Impact 'TLS between Exchange servers uses the self-signed certificate again. Connectors with TlsCertificateName (hybrid) are not affected.') {
+            try {
+                Enable-ExchangeCertificate -Thumbprint $selfSigned.Thumbprint -Services SMTP -Force -ErrorAction Stop
+            }
+            catch { Write-Problem "Enable-ExchangeCertificate failed: $($_.Exception.Message)" }
+            $nowDefault = Get-InternalTransportCertificate
+            if ($nowDefault -and $nowDefault.Thumbprint -eq $selfSigned.Thumbprint) {
+                Write-Ok "Internal transport certificate is now $($selfSigned.Thumbprint) (read back from AD)."
+                Add-ChangeLogEntry "Made self-signed $($selfSigned.Thumbprint) the internal transport certificate"
+                $restartRequired = $true
+            }
+            else {
+                Write-Problem "AD still shows $(if ($nowDefault) { $nowDefault.Thumbprint } else { '<none>' }) as internal transport certificate."
+            }
+        }
+    }
+}
+
+# --- Remediation 4b: Exchange Back End binding (port 444) -------------------
+if ($issues -contains 'BackendCertBroken') {
+    if (-not $selfSigned) { $selfSigned = Get-SelfSignedCandidate }
+    if (-not $selfSigned) {
+        Write-Warn 'No valid self-signed Exchange certificate to bind to the Back End site.'
+        Write-Info 'Run again with -RestoreSelfSignedDefault to create one, then repeat.'
+    }
+    else {
+        foreach ($b in @(Get-BackendBinding | Where-Object { -not $_.InStore -or $_.NotAfter -lt (Get-Date) })) {
+            $appId = if ($b.AppId) { $b.AppId } else { '{4dc3e181-e14b-4a21-b022-59fc669b0914}' }
+            $cmd   = "netsh http update sslcert ipport=$($b.IpPort) certhash=$($selfSigned.Thumbprint) appid=$appId certstorename=MY"
+            if (Confirm-Write -Action "Bind the Exchange Back End site ($($b.IpPort)) to the self-signed certificate" -Detail $cmd `
+                    -Impact 'Front end to back end proxying (OWA, ECP, EWS, ...) uses this certificate. Only port 444 is touched.') {
+                $out = & netsh http update sslcert "ipport=$($b.IpPort)" "certhash=$($selfSigned.Thumbprint)" "appid=$appId" 'certstorename=MY' 2>&1 | Out-String
+                $nb  = @(Get-BackendBinding | Where-Object { $_.IpPort -eq $b.IpPort })
+                if ($nb.Count -gt 0 -and $nb[0].Thumbprint -eq $selfSigned.Thumbprint) {
+                    Write-Ok "Back End $($b.IpPort) now uses $($selfSigned.Thumbprint)."
+                    Add-ChangeLogEntry "Bound Exchange Back End $($b.IpPort) to $($selfSigned.Thumbprint)"
+                    Write-Info 'Recommended afterwards: iisreset /noforce'
+                }
+                else {
+                    Write-Problem "Back End binding unchanged. netsh said: $($out.Trim())"
+                }
             }
         }
     }
