@@ -1,0 +1,57 @@
+name: Auto-Release
+
+# Neue Versionsnummer = neues Release, ohne dass jemand an den Tag denken muss.
+# Laeuft nach jeder GRUENEN CI auf main: Hat ein Werkzeug eine $script:Version, zu der
+# es noch keinen Tag <Werkzeug>/v<Version> gibt, legt dieser Workflow den Tag an und
+# startet den Release-Workflow fuer genau diesen Tag.
+#
+# Warum workflow_dispatch statt Tag-Push: Ein mit dem GITHUB_TOKEN gepushter Tag loest
+# keine weiteren Workflows aus (Schutz gegen Endlosschleifen). workflow_dispatch ist davon
+# ausgenommen. Pro Tag ein eigener Aufruf - die "mehr als drei Tags"-Falle trifft hier nicht.
+#
+# Wer eine Version erst still testen will, zaehlt sie noch nicht hoch.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write    # Tags pushen
+  actions: write     # Release-Workflow starten
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+jobs:
+  release-missing:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Fehlende Releases anlegen
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git fetch --tags --force --quiet
+          $missing = @(& ./build/Get-ReleaseDrift.ps1 -MissingOnly)
+          if ($missing.Count -eq 0) { Write-Host 'Alle Werkzeug-Versionen haben ein Release.'; return }
+
+          foreach ($m in $missing) {
+            Write-Host ("{0} {1}: Tag {2} fehlt - wird angelegt." -f $m.Tool, $m.Version, $m.Tag)
+            git tag $m.Tag $env:SHA
+            if ($LASTEXITCODE -ne 0) { throw "git tag $($m.Tag) fehlgeschlagen." }
+            git push origin $m.Tag
+            if ($LASTEXITCODE -ne 0) { throw "git push $($m.Tag) fehlgeschlagen." }
+            # --ref auf den Tag: der Release-Workflow baut genau diesen Stand.
+            gh workflow run release.yml --ref $m.Tag -f "tag=$($m.Tag)"
+            if ($LASTEXITCODE -ne 0) { throw "Release-Workflow fuer $($m.Tag) liess sich nicht starten." }
+          }

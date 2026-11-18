@@ -68,7 +68,20 @@ steht in seiner `release.psd1`.
 ## Releases
 
 Wer nicht bauen will, findet fertige EXE-Dateien unter [Releases](../../releases). Ein Release
-je Werkzeug, ausgelöst durch einen Tag der Form `<Werkzeug>/v<Version>`:
+je Werkzeug, ausgelöst durch einen Tag der Form `<Werkzeug>/v<Version>`.
+
+**Neue Versionsnummer = neues Release.** Nach jeder grünen CI auf `main` sucht
+`.github/workflows/auto-release.yml` mit `build/Get-ReleaseDrift.ps1` nach Werkzeugen, deren
+`$script:Version` noch keinen Tag hat, legt den Tag an und startet den Release-Workflow für
+genau diesen Stand. Wer eine Version erst still testen will, zählt sie noch nicht hoch.
+Den Stand zeigt jederzeit:
+
+```
+.\build\Get-ReleaseDrift.ps1               # alle Werkzeuge
+.\build\Get-ReleaseDrift.ps1 -MissingOnly  # nur die ohne Release
+```
+
+Von Hand geht es weiterhin:
 
 ```
 git tag MailContactEditor/v1.0.0

@@ -23,7 +23,11 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
+      # Beim Nachholen per workflow_dispatch den Stand des TAGS bauen, nicht den des
+      # Zweigs, von dem aus gestartet wurde - sonst landet eine andere .ps1 im Release.
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 
       - name: Tag zerlegen
         id: tag
