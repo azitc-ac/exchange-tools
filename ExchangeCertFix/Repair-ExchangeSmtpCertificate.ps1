@@ -7,13 +7,20 @@
     Common root causes covered by this script:
       1. Private key stored in a CNG Key Storage Provider (KSP) instead of a
          legacy CSP. Exchange transport cannot use CNG keys reliably.
-      2. Missing ACL on the private key for NETWORK SERVICE.
-      3. Enable-ExchangeCertificate silently aborting without -Force because
-         another certificate already holds the default SMTP flag.
+      2. Missing ACL on the private key for NETWORK SERVICE. Import-ExchangeCertificate
+         does not grant it; Enable-ExchangeCertificate -Services SMTP does (measured on
+         Exchange SE: no ACE after import, Read ACE right after enabling SMTP).
+      3. The "Overwrite the existing default SMTP certificate?" question. Without -Force
+         Exchange asks it AFTER it has already added SMTP and the ACL; answering No keeps
+         the internal transport certificate (msExchServerInternalTLSCert), Yes or -Force
+         replaces it. In a non-interactive session the question throws instead.
       4. Receive Connectors with a hard-coded TlsCertificateName pointing to an
          old thumbprint, which overrides the default SMTP certificate.
       5. Stale expired certificates still carrying the SMTP service flag.
       6. Transport services holding a handle on the previous certificate.
+      7. Internal transport certificate pointing to a certificate that is gone from
+         the store or expired (transport event 12013 "could not load the certificate
+         with thumbprint ... from the personal store").
 
     The script is read-only by default. Every write operation is presented as an
     explicit prompt. Nothing is changed without confirmation.
@@ -28,6 +35,11 @@
 
 .PARAMETER DiagnoseOnly
     Runs all checks and prints the report, but never offers any remediation.
+
+.PARAMETER KeepDefaultSmtp
+    Enables SMTP on the target certificate WITHOUT making it the internal transport
+    (default SMTP) certificate. Without this switch the script recommends Yes or No
+    based on the current default and asks.
 
 .EXAMPLE
     .\Repair-ExchangeSmtpCertificate.ps1
@@ -51,11 +63,14 @@ param(
     [string]$WorkingFolder = $env:TEMP,
 
     [Parameter(Mandatory = $false)]
-    [switch]$DiagnoseOnly
+    [switch]$DiagnoseOnly,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$KeepDefaultSmtp
 )
 
 # Einzige Stelle fuer die Versionsnummer; Build und Release-Tag lesen sie hier aus.
-$script:Version = '1.0.0'
+$script:Version = '1.1.0'
 
 
 #region ---------------------------------------------------------- Helper functions
@@ -257,8 +272,10 @@ function Test-PrivateKeyAcl {
         foreach ($ace in $acl.Access) {
             $identity = $ace.IdentityReference.Value
             if ($identity -match 'NETWORK SERVICE|NETZWERKDIENST|S-1-5-20') {
-                if ($ace.FileSystemRights -band [System.Security.AccessControl]::FileSystemRights::Read -or
-                    $ace.FileSystemRights.ToString() -match 'Read|FullControl') {
+                $read = [System.Security.AccessControl.FileSystemRights]::Read
+                if ($ace.AccessControlType -eq 'Allow' -and
+                    ((($ace.FileSystemRights -band $read) -eq $read) -or
+                     $ace.FileSystemRights.ToString() -match 'FullControl')) {
                     $result.NetworkServiceOk = $true
                 }
             }
@@ -271,6 +288,75 @@ function Test-PrivateKeyAcl {
     return $result
 }
 
+function Get-InternalTransportCertificate {
+    <#
+        Reads the internal transport ("default SMTP") certificate of a server from AD
+        (msExchServerInternalTLSCert). Get-TransportService caches this value per
+        session, so AD is the authoritative source. Returns $null if the attribute is
+        empty, or an object with Error set if it cannot be read.
+    #>
+    param([string]$Server = $env:COMPUTERNAME)
+    try {
+        $cfg = ([ADSI]'LDAP://RootDSE').configurationNamingContext.ToString()
+        $searcher = New-Object System.DirectoryServices.DirectorySearcher(
+            [ADSI]"LDAP://$cfg", "(&(objectClass=msExchExchangeServer)(cn=$Server))")
+        [void]$searcher.PropertiesToLoad.Add('msexchserverinternaltlscert')
+        $hit = $searcher.FindOne()
+        if (-not $hit) { return [PSCustomObject]@{ Error = "Exchange server object '$Server' not found in AD." } }
+        $raw = $hit.Properties['msexchserverinternaltlscert']
+        if (-not $raw -or $raw.Count -eq 0) { return $null }
+        $c = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(, [byte[]]$raw[0])
+        return [PSCustomObject]@{
+            Thumbprint   = $c.Thumbprint
+            Subject      = $c.Subject
+            NotAfter     = $c.NotAfter
+            IsSelfSigned = ($c.Subject -eq $c.Issuer)
+            InStore      = [bool](Test-Path -LiteralPath "Cert:\LocalMachine\My\$($c.Thumbprint)")
+            Error        = $null
+        }
+    }
+    catch {
+        return [PSCustomObject]@{ Error = $_.Exception.Message }
+    }
+}
+
+function Get-DefaultSmtpRecommendation {
+    <#
+        Decides whether enabling SMTP on the target should also overwrite the internal
+        transport certificate. Pure function (no Exchange calls) so it can be tested.
+          Keep           - current default is a valid self-signed Exchange certificate
+          Overwrite      - current default is missing, gone from the store, expired, or a
+                           CA-issued certificate (normally the one being replaced)
+          AlreadyDefault - the target already is the default
+          Unknown        - the default could not be read
+    #>
+    param(
+        $Current,
+        [Parameter(Mandatory = $true)]$Target,
+        [datetime]$Now = (Get-Date)
+    )
+    $r = { param($a, $why) [PSCustomObject]@{ Action = $a; Reason = $why } }
+    if ($null -eq $Current) {
+        return & $r 'Overwrite' 'No internal transport certificate is set for this server.'
+    }
+    if ($Current.Error) {
+        return & $r 'Unknown' "The internal transport certificate could not be read: $($Current.Error)"
+    }
+    if ($Current.Thumbprint -eq $Target.Thumbprint) {
+        return & $r 'AlreadyDefault' 'The target already is the internal transport certificate.'
+    }
+    if (-not $Current.InStore) {
+        return & $r 'Overwrite' "The default points to $($Current.Thumbprint), which is no longer in the local store (transport event 12013)."
+    }
+    if ($Current.NotAfter -lt $Now) {
+        return & $r 'Overwrite' "The default $($Current.Thumbprint) expired on $($Current.NotAfter.ToString('yyyy-MM-dd'))."
+    }
+    if (-not $Current.IsSelfSigned) {
+        return & $r 'Overwrite' "The default is the CA-issued certificate $($Current.Subject) - usually the one being replaced. Keeping it leaves the default on the old certificate."
+    }
+    return & $r 'Keep' 'The default is a valid self-signed Exchange certificate. Keep it for TLS between Exchange servers; it does not follow the public renewal cycle.'
+}
+
 function Get-SmtpCertificateSnapshot {
     <#
         Returns the current state of all Exchange certificates carrying the SMTP
@@ -281,6 +367,7 @@ function Get-SmtpCertificateSnapshot {
         Timestamp          = Get-Date
         SmtpCertificates   = @()
         ReceiveConnectors  = @()
+        InternalTransport  = Get-InternalTransportCertificate
     }
 
     $snapshot.SmtpCertificates = @(
@@ -321,6 +408,19 @@ function Show-SmtpCertificateSnapshot {
             Out-String -Width 200 |
             Write-Host
     }
+
+    $it = $Snapshot.InternalTransport
+    Write-Host 'Internal transport (default SMTP) certificate, from AD:' -ForegroundColor White
+    if ($null -eq $it)   { Write-Host '  <not set>' -ForegroundColor Yellow }
+    elseif ($it.Error)   { Write-Host "  <unreadable: $($it.Error)>" -ForegroundColor Yellow }
+    else {
+        $flags = @()
+        if ($it.IsSelfSigned)              { $flags += 'self-signed' }
+        if (-not $it.InStore)              { $flags += 'NOT IN STORE' }
+        if ($it.NotAfter -lt (Get-Date))   { $flags += 'EXPIRED' }
+        Write-Host ("  {0}  {1}  until {2}  {3}" -f $it.Thumbprint, $it.Subject, $it.NotAfter.ToString('yyyy-MM-dd'), ($flags -join ', '))
+    }
+    Write-Host ''
 
     Write-Host 'Receive Connector TLS certificate bindings:' -ForegroundColor White
     $Snapshot.ReceiveConnectors |
@@ -571,6 +671,24 @@ else {
     Write-Ok 'No Receive Connector has a conflicting TlsCertificateName binding.'
 }
 
+# --- Check 8: internal transport (default SMTP) certificate ------------------
+$internalTransport = $before.InternalTransport
+$defaultAdvice     = Get-DefaultSmtpRecommendation -Current $internalTransport -Target $target
+switch ($defaultAdvice.Action) {
+    'AlreadyDefault' { Write-Ok   $defaultAdvice.Reason }
+    'Keep'           { Write-Ok   "Internal transport certificate is fine. $($defaultAdvice.Reason)" }
+    'Unknown'        { Write-Warn $defaultAdvice.Reason }
+    'Overwrite'      {
+        if ($null -eq $internalTransport -or -not $internalTransport.InStore -or $internalTransport.NotAfter -lt (Get-Date)) {
+            Write-Problem "Internal transport certificate is broken. $($defaultAdvice.Reason)"
+            [void]$issues.Add('InternalTransportCertBroken')
+        }
+        else {
+            Write-Info "Internal transport certificate: $($defaultAdvice.Reason)"
+        }
+    }
+}
+
 # --- Summary ------------------------------------------------------------------
 Write-Section 'Diagnostic summary'
 if ($issues.Count -eq 0) {
@@ -785,45 +903,92 @@ foreach ($stale in $staleCerts) {
 
 # --- Remediation 4: enable SMTP on the target certificate --------------------
 $activeCert = Get-ExchangeCertificate -Thumbprint $activeThumbprint -ErrorAction SilentlyContinue
+$needEnable  = $activeCert -and $activeCert.Services -notmatch 'SMTP'
+$needDefault = $activeCert -and ($issues -contains 'InternalTransportCertBroken')
 
-if ($activeCert -and $activeCert.Services -notmatch 'SMTP') {
+if ($needEnable -or $needDefault) {
 
-    Write-Host ''
-    Write-Host 'Which services should be enabled on the target certificate?' -ForegroundColor White
-    Write-Host '  [1] SMTP only'
-    Write-Host '  [2] SMTP and IIS  (recommended for a standard Exchange certificate)'
-    Write-Host '  [3] SMTP, IIS, IMAP, POP'
-    Write-Host '  [4] Skip'
+    # Services: ask only if SMTP is missing; otherwise re-enable SMTP just to move the default.
+    $services = 'SMTP'
+    if ($needEnable) {
+        Write-Host ''
+        Write-Host 'Which services should be enabled on the target certificate?' -ForegroundColor White
+        Write-Host '  [1] SMTP only'
+        Write-Host '  [2] SMTP and IIS  (recommended for a standard Exchange certificate)'
+        Write-Host '  [3] SMTP, IIS, IMAP, POP'
+        Write-Host '  [4] Skip'
 
-    do {
-        $svcChoice = Read-Host 'Selection [1-4]'
-    } while ($svcChoice -notin @('1', '2', '3', '4'))
+        do {
+            $svcChoice = Read-Host 'Selection [1-4]'
+        } while ($svcChoice -notin @('1', '2', '3', '4'))
 
-    $services = switch ($svcChoice) {
-        '1' { 'SMTP' }
-        '2' { 'SMTP,IIS' }
-        '3' { 'SMTP,IIS,IMAP,POP' }
-        '4' { $null }
+        $services = switch ($svcChoice) {
+            '1' { 'SMTP' }
+            '2' { 'SMTP,IIS' }
+            '3' { 'SMTP,IIS,IMAP,POP' }
+            '4' { $null }
+        }
     }
 
+    # Default SMTP certificate: overwrite or keep?
+    $advice = Get-DefaultSmtpRecommendation -Current (Get-InternalTransportCertificate) -Target $activeCert
+    if ($advice.Action -eq 'AlreadyDefault') {
+        $overwriteDefault = $false
+    }
+    elseif ($KeepDefaultSmtp) {
+        $overwriteDefault = $false
+        Write-Info '-KeepDefaultSmtp: the internal transport certificate will NOT be changed.'
+        if ($advice.Action -eq 'Overwrite') { Write-Warn "Note: $($advice.Reason)" }
+    }
+    else {
+        $recommendYes = ($advice.Action -eq 'Overwrite')
+        Write-Host ''
+        Write-Host 'Make the target the internal transport (default SMTP) certificate?' -ForegroundColor White
+        Write-Host "  Recommendation: $(if ($recommendYes) { 'YES' } else { 'NO' }) - $($advice.Reason)"
+        Write-Host '  It is used for TLS between Exchange servers. Inbound STARTTLS from the internet'
+        Write-Host '  is chosen by connector FQDN / TlsCertificateName and does not need it.'
+        do {
+            $answer = Read-Host "Overwrite default? [y/n] (Enter = $(if ($recommendYes) { 'y' } else { 'n' }))"
+            if ([string]::IsNullOrWhiteSpace($answer)) { $answer = $(if ($recommendYes) { 'y' } else { 'n' }) }
+        } while ($answer -notin @('y', 'n'))
+        $overwriteDefault = ($answer -eq 'y')
+    }
+
+    if ($needDefault -and -not $needEnable -and -not $overwriteDefault) { $services = $null }
+
     if ($services) {
-        $ok = Confirm-Write `
-            -Action "Enable services '$services' on the target certificate" `
-            -Detail "Enable-ExchangeCertificate -Thumbprint $activeThumbprint -Services $services -Force" `
-            -Impact 'The -Force switch suppresses the "overwrite default SMTP certificate" prompt. If IIS is included, the IIS binding for the Default Web Site will be replaced.'
+        $cmd    = "Enable-ExchangeCertificate -Thumbprint $activeThumbprint -Services $services$(if ($overwriteDefault) { ' -Force' })"
+        $impact = if ($overwriteDefault) {
+            'The target becomes the internal transport (default SMTP) certificate (-Force answers the overwrite question with Yes).'
+        } else {
+            'The internal transport certificate stays as it is. Exchange will ask "Overwrite the existing default SMTP certificate?" - answer N. SMTP and the NETWORK SERVICE key ACL are applied either way.'
+        }
+        if ($services -match 'IIS') { $impact += ' The IIS binding for the Default Web Site will be replaced.' }
+
+        $ok = Confirm-Write -Action "Enable services '$services' on the target certificate" -Detail $cmd -Impact $impact
 
         if ($ok) {
             try {
-                Enable-ExchangeCertificate -Thumbprint $activeThumbprint `
-                                           -Services $services `
-                                           -Force `
-                                           -ErrorAction Stop
-                Write-Ok "Services '$services' enabled on $activeThumbprint."
-                Add-ChangeLogEntry "Enabled services '$services' on $activeThumbprint"
-                $restartRequired = $true
+                if ($overwriteDefault) {
+                    Enable-ExchangeCertificate -Thumbprint $activeThumbprint -Services $services -Force -ErrorAction Stop
+                }
+                else {
+                    Enable-ExchangeCertificate -Thumbprint $activeThumbprint -Services $services -ErrorAction Stop
+                }
             }
             catch {
-                Write-Problem "Enable-ExchangeCertificate failed: $($_.Exception.Message)"
+                # Measured: without -Force the overwrite question comes AFTER SMTP has been
+                # applied. In a non-interactive host it throws; the result still counts.
+                Write-Warn "Enable-ExchangeCertificate reported: $($_.Exception.Message)"
+            }
+            $check = Get-ExchangeCertificate -Thumbprint $activeThumbprint -ErrorAction SilentlyContinue
+            if ($check -and $check.Services -match 'SMTP') {
+                Write-Ok "Services now on $activeThumbprint : $($check.Services)"
+                Add-ChangeLogEntry "Enabled services '$services' on $activeThumbprint (overwrite default: $overwriteDefault)"
+                $restartRequired = $true
+            }
+            else {
+                Write-Problem "SMTP is not set on $activeThumbprint after Enable-ExchangeCertificate."
             }
         }
     }

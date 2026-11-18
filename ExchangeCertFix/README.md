@@ -15,22 +15,45 @@ löschen. Beide laufen auf dem Exchange-Server, beide ändern nichts ohne Rückf
 .\Repair-ExchangeSmtpCertificate.ps1 -DiagnoseOnly          # nur ansehen, nichts ändern
 .\Repair-ExchangeSmtpCertificate.ps1 -Thumbprint <40 Hex>   # gezielt ein Zertifikat behandeln
 .\Repair-ExchangeSmtpCertificate.ps1                        # Auswahl im Dialog
+.\Repair-ExchangeSmtpCertificate.ps1 -KeepDefaultSmtp       # SMTP setzen, Standard-SMTP-Zertifikat behalten
 ```
 
 Der Ablauf ist immer derselbe: Ist-Zustand aufnehmen → Diagnose → Zusammenfassung → Behebung nur
 nach Bestätigung → Änderungsprotokoll → Vorher/Nachher-Vergleich → Prüfung. Mit `-DiagnoseOnly`
 endet er nach der Zusammenfassung.
 
-Geprüft und behoben werden die vier Ursachen, die in der Praxis dahinterstecken:
+Geprüft und behoben werden die Ursachen, die in der Praxis dahinterstecken:
 
 1. **Privater Schlüssel im CNG-Speicher (KSP) statt im Legacy-CSP.** Der Transportdienst kommt mit
    CNG-Schlüsseln nicht zuverlässig zurecht – das Zertifikat wird zugewiesen und trotzdem nicht
-   verwendet.
-2. **Fehlende Berechtigung auf dem privaten Schlüssel** für NETWORK SERVICE.
-3. **`Enable-ExchangeCertificate` bricht ohne `-Force` still ab**, wenn bereits ein anderes
-   Zertifikat die SMTP-Standardkennung trägt.
+   verwendet. Microsoft dokumentiert das ausdrücklich nur für OWA/ECP unter Exchange 2013
+   (KB 3032024); Lösung dort wie hier: Neuimport in einen CSP, z. B.
+   *Microsoft RSA SChannel Cryptographic Provider*.
+2. **Fehlende Berechtigung auf dem privaten Schlüssel** für NETWORK SERVICE. Gemessen auf Exchange
+   SE: `Import-ExchangeCertificate` setzt sie **nicht**, erst `Enable-ExchangeCertificate -Services
+   SMTP` – auch dann, wenn die Rückfrage danach mit Nein beantwortet wird.
+3. **Das Standard-SMTP-Zertifikat** (internes Transportzertifikat, `msExchServerInternalTLSCert`).
+   Das Skript zeigt, worauf es zeigt, meldet einen kaputten Standard (Zertifikat nicht mehr im
+   Speicher oder abgelaufen, Transport-Ereignis 12013) und fragt beim Aktivieren mit Empfehlung,
+   ob es überschrieben werden soll (siehe unten).
 4. **Receive-Connectors mit fest eingetragenem `TlsCertificateName`**, der weiter auf das alte
    Zertifikat zeigt.
+
+### Standard-SMTP-Zertifikat überschreiben – ja oder nein?
+
+`Enable-ExchangeCertificate -Services SMTP` fragt *„Overwrite the existing default SMTP
+certificate?“*. **Ja** (oder `-Force`) macht das neue Zertifikat zum internen Transportzertifikat
+für TLS zwischen den Exchange-Servern. Für eingehendes STARTTLS aus dem Internet ist das nicht
+nötig – dort wählt Exchange über FQDN bzw. `TlsCertificateName` des Connectors.
+
+| Der Standard zeigt auf … | Empfehlung |
+|---|---|
+| das gültige selbstsignierte Exchange-Zertifikat | **Nein** – behalten, es hängt nicht am Erneuerungszyklus |
+| das alte öffentliche Zertifikat, das gerade ersetzt wird | **Ja** – sonst bleibt der Standard auf dem alten hängen |
+| ein Zertifikat, das abgelaufen oder nicht mehr im Speicher ist | **Ja** |
+
+Die Empfehlung ist die Regel aus der Praxis, nicht aus einer Microsoft-Quelle. Mit
+`-KeepDefaultSmtp` bleibt der Standard in jedem Fall unverändert.
 
 ## Remove-SupersededExchangeCertificate
 
