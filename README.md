@@ -19,6 +19,7 @@ Werkzeug, jeder für sich lauffähig – es gibt keine gemeinsame Laufzeit und k
 | [MailboxDatabaseCheck](MailboxDatabaseCheck/) | Datenbank leer? | Alle Postfacharten einer Datenbank finden – auch Archive, Arbitration, AuditLog – mit Befehl zum Entfernen; vor `Remove-MailboxDatabase` oder dem Rückbau des letzten Servers |
 | [MailContactEditor](MailContactEditor/) | E-Mail-Kontakte (Exchange Online) | Kontakt aus filterbarer Liste wählen, primäre und externe Adresse ändern |
 | [AttributeWritebackCheck](AttributeWritebackCheck/) | Writeback der Exchange-Attribute | Empfängertyp, `mail` und primäre Adresse jedes synchronisierten Postfachs zwischen Exchange Online und AD vergleichen, jede Abweichung erklären, ein Urteil – vor und nach dem Einrichten des Writebacks |
+| [DmarcReportAnalyzer](DmarcReportAnalyzer/) | DMARC-Reports | Aggregate-Reports aus Ordner, Gruppenpostfach oder Postfach auswerten: wer sendet in meinem Namen, hängt der Pass an DKIM oder nur an SPF, ist die Domain reif für `p=reject` |
 | [TestMailboxFiller](TestMailboxFiller/) | Testdaten im Postfach | Postfach mit rückdatierten Nachrichten füllen – für Retention Policies, OST-Zwischenspeicherung und Kontingente; on-premises über EWS, Exchange Online über Graph |
 
 ## Voraussetzungen
@@ -30,7 +31,8 @@ Exchange-Verwaltungsshell auf dem Server, auf dem sie laufen. `EopMdoHardening`,
 `ExchangeTester` sind davon unabhängig – der Tester läuft bewusst auch auf einem
 Arbeitsplatzrechner, weil er die Sicht des Clients einnimmt. `TestMailboxFiller` nutzt weder
 Verwaltungsshell noch Modul: on-premises arbeitet er über EWS, gegen Exchange Online über
-Microsoft Graph.
+Microsoft Graph. Auch `DmarcReportAnalyzer` braucht kein Modul; Postfächer liest er über
+Microsoft Graph per REST.
 
 Die Werkzeuge prüfen das selbst, statt mitten in der Arbeit mit „Begriff wird nicht erkannt"
 abzubrechen: PowerShell-Ausgabe, TLS 1.2, Modulversion, bestehende Anmeldung – und ob die
