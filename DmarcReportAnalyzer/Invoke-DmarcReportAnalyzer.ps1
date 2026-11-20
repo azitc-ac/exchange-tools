@@ -19,11 +19,13 @@
 
 .PARAMETER GroupMailbox
     Adresse einer Microsoft-365-Gruppe, in deren Postfach die Reports eingehen.
-    Benötigt delegiert Group.Read.All.
+    Benötigt delegiert Group.Read.All. Dafür muss im Tenant einmal ein Administrator der App
+    "Microsoft Graph Command Line Tools" zugestimmt haben; danach genügt die Anmeldung des
+    Benutzers, der Zugriff auf die Gruppe hat.
 
 .PARAMETER Mailbox
     Adresse eines persönlichen oder freigegebenen Postfachs (Vollzugriff nötig).
-    Benötigt delegiert Mail.Read.Shared.
+    Benötigt delegiert Mail.Read.Shared (keine Administratorzustimmung nötig).
 
 .PARAMETER Days
     Nur Reports, deren Zeitraum in den letzten n Tagen endet. Standard 30.

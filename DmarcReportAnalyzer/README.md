@@ -16,7 +16,7 @@ die Daten verlassen den Rechner nicht.
 | Parameter | Bedeutung |
 |---|---|
 | `-Path` | Ordner, Unterordner eingeschlossen |
-| `-GroupMailbox` | Gruppenpostfach einer Microsoft-365-Gruppe; delegiert `Group.Read.All` |
+| `-GroupMailbox` | Gruppenpostfach einer Microsoft-365-Gruppe; delegiert `Group.Read.All` (einmalig Administratorzustimmung, siehe unten) |
 | `-Mailbox` | persönliches oder freigegebenes Postfach mit Vollzugriff; delegiert `Mail.Read.Shared` |
 | `-Days` | Zeitraum, Standard 30 |
 | `-OutputPath` | HTML-Datei; die CSV entsteht daneben. Fehlende Ordner werden angelegt |
@@ -26,7 +26,14 @@ die Daten verlassen den Rechner nicht.
 **Anmeldung.** Bei `-GroupMailbox` und `-Mailbox` meldet sich das Skript per Gerätecode an, und
 zwar mit der App *Microsoft Graph Command Line Tools*. Anmelden muss sich **der Benutzer, der
 Zugriff auf die Gruppe bzw. das Postfach hat**, kein Administrator. Ein Graph-Modul ist nicht
-nötig. Der Gerätecode läuft bewusst über REST, weil `Connect-MgGraph` in Hosts ohne Konsole mit
+nötig.
+
+**Einmalige Administratorzustimmung bei `-GroupMailbox`.** `Group.Read.All` braucht laut
+Microsoft auch delegiert eine Administratorzustimmung. Hat im Tenant noch niemand der App
+*Microsoft Graph Command Line Tools* dieses Recht gewährt, muss ein Administrator einmal
+zustimmen, z. B. bei seiner eigenen ersten Anmeldung mit „Im Namen der Organisation zustimmen“.
+Danach genügt jedem berechtigten Benutzer die eigene Anmeldung. `Mail.Read.Shared` für
+`-Mailbox` braucht keine Administratorzustimmung. Der Gerätecode läuft bewusst über REST, weil `Connect-MgGraph` in Hosts ohne Konsole mit
 „An error occurred when writing to a listener“ scheitert.
 
 **Exitcodes.** `0` = Bericht geschrieben, `2` = keine DMARC-Daten im Zeitraum.
