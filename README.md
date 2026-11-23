@@ -17,6 +17,7 @@ Werkzeug, jeder für sich lauffähig – es gibt keine gemeinsame Laufzeit und k
 | [ImportExchangePfx](ImportExchangePfx/) | PFX-Import | Kleines Hilfsskript: PFX auswählen und auf dem lokalen Server importieren |
 | [EopMdoHardening](EopMdoHardening/) | EOP- und Defender-Assessment | 120 Prüfpunkte für Exchange Online Protection und Defender for Office 365: Ist-Zustand auslesen, Abweichungen begründen, Baseline setzen |
 | [MailboxDatabaseCheck](MailboxDatabaseCheck/) | Datenbank leer? | Alle Postfacharten einer Datenbank finden – auch Archive, Arbitration, AuditLog – mit Befehl zum Entfernen; vor `Remove-MailboxDatabase` oder dem Rückbau des letzten Servers |
+| [HybridFreeBusyCheck](HybridFreeBusyCheck/) | Hybrid-Frei/Gebucht | Prüft auf dem Exchange-Server Schritt für Schritt, was Frei/Gebucht nach Exchange Online braucht: Dedicated Hybrid App, Build, Override, AuthServer, Token, Graph oder EWS – mit Befehl je Befund
 | [MailContactEditor](MailContactEditor/) | E-Mail-Kontakte (Exchange Online) | Kontakt aus filterbarer Liste wählen, primäre und externe Adresse ändern |
 | [AttributeWritebackCheck](AttributeWritebackCheck/) | Writeback der Exchange-Attribute | Empfängertyp, `mail` und primäre Adresse jedes synchronisierten Postfachs zwischen Exchange Online und AD vergleichen, jede Abweichung erklären, ein Urteil – vor und nach dem Einrichten des Writebacks |
 | [DmarcReportAnalyzer](DmarcReportAnalyzer/) | DMARC-Reports | Aggregate-Reports aus Ordner, Gruppenpostfach oder Postfach auswerten: wer sendet in meinem Namen, hängt der Pass an DKIM oder nur an SPF, ist die Domain reif für `p=reject` |
@@ -24,7 +25,7 @@ Werkzeug, jeder für sich lauffähig – es gibt keine gemeinsame Laufzeit und k
 
 ## Voraussetzungen
 
-Windows PowerShell 5.1. `AcmeExchange`, `ExchangeQueueViewer`, `ImportExchangePfx` und `MailboxDatabaseCheck` erwarten die
+Windows PowerShell 5.1. `AcmeExchange`, `ExchangeQueueViewer`, `ImportExchangePfx`, `MailboxDatabaseCheck` und `HybridFreeBusyCheck` erwarten die
 Exchange-Verwaltungsshell auf dem Server, auf dem sie laufen. `EopMdoHardening`,
 `MailContactEditor` und `AttributeWritebackCheck` arbeiten gegen Exchange Online und erwarten das Modul
 `ExchangeOnlineManagement` **ab Version 3.6.0**. `LogViewer`, `ExchangeLogAnalyzer` und
