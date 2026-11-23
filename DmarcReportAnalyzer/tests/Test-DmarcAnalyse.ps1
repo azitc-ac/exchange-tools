@@ -12,7 +12,8 @@ $ast = [System.Management.Automation.Language.Parser]::ParseFile($skript, [ref]$
 foreach ($fn in 'ConvertFrom-DmarcAttachment', 'ConvertFrom-DmarcXml', 'Get-DmarcRows', 'Get-SenderService',
                 'Test-DomainRelated', 'Get-DmarcRowFinding', 'Get-FindingLabel', 'Format-DayList',
                 'Get-DmarcSources', 'Get-DmarcDomainSummary', 'Get-DmarcRecommendation', 'New-DmarcHtmlReport',
-                'Get-GraphPages') {
+                'Get-GraphPages', 'Get-GraphAccessToken', 'ConvertTo-Base64Url', 'New-PkceVerifier',
+                'Get-PkceChallenge', 'ConvertFrom-AuthRedirect', 'Get-GraphTokenBrowser') {
     $def = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq $fn }, $false)
     if (-not $def) { throw "Funktion nicht gefunden: $fn" }
     Invoke-Expression $def[0].Extent.Text
@@ -207,6 +208,80 @@ $script:Seiten = @{
 function Invoke-Graph { param($Uri, $Token) $script:Seiten[$Uri] }
 $ids = @(Get-GraphPages -Uri 'p1' -Token 'x' -SkipBefore ([datetime]'2026-10-20') -DateField 'd' | ForEach-Object id)
 T 'nach älterem Eintrag weiterlesen' ($ids -join ',') 'a,b'
+
+Write-Output "`n######## Anmeldung: PKCE ########"
+# Testvektor aus RFC 7636, Anhang B
+T 'S256-Challenge nach RFC 7636' (Get-PkceChallenge 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk') 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM'
+$v1 = New-PkceVerifier; $v2 = New-PkceVerifier
+T 'Verifier: 43 Zeichen base64url' ($v1 -cmatch '^[A-Za-z0-9_-]{43}$') $true
+T 'Verifier: jedes Mal neu'        ($v1 -ne $v2) $true
+
+Write-Output "`n######## Anmeldung: Rückkehr auf den lokalen Port ########"
+T 'Code wird gelesen (URL-kodiert)' (ConvertFrom-AuthRedirect 'GET /?code=0.Ab%2Bc%3D&state=s1&session_state=x HTTP/1.1' -ExpectedState 's1') '0.Ab+c='
+T 'favicon wird übergangen'         ($null -eq (ConvertFrom-AuthRedirect 'GET /favicon.ico HTTP/1.1' -ExpectedState 's1')) $true
+T 'leere Verbindung wird übergangen' ($null -eq (ConvertFrom-AuthRedirect $null -ExpectedState 's1')) $true
+T 'falscher state wirft'            (Werfen { ConvertFrom-AuthRedirect 'GET /?code=abc&state=fremd HTTP/1.1' -ExpectedState 's1' }) $true
+T 'fehlender state wirft'           (Werfen { ConvertFrom-AuthRedirect 'GET /?code=abc HTTP/1.1' -ExpectedState 's1' }) $true
+$m = try { ConvertFrom-AuthRedirect 'GET /?error=access_denied&error_description=AADSTS65004%3A+User+declined&state=s1 HTTP/1.1' -ExpectedState 's1'; 'kein Fehler' } catch { "$_" }
+T 'access_denied: verständliche Meldung' ($m -match '^Anmeldung abgelehnt oder abgebrochen \(access_denied\): AADSTS65004: User declined') $true
+
+Write-Output "`n######## Anmeldung: Weg zum Token ########"
+function Get-GraphTokenBrowser    { param($Scope, $Tenant) "browser:$Scope@$Tenant" }
+function Get-GraphTokenDeviceCode { param($Scope, $Tenant) "device:$Scope@$Tenant" }
+T 'Standard: Browser'          (Get-GraphAccessToken -Scope 'Group.Read.All' -Tenant 't') 'browser:Group.Read.All@t'
+T '-UseDeviceCode: Gerätecode' (Get-GraphAccessToken -Scope 'Mail.Read.Shared' -Tenant 't' -UseDeviceCode) 'device:Mail.Read.Shared@t'
+T '-AccessToken gewinnt'       (Get-GraphAccessToken -Scope 'x' -AccessToken 'tok' -UseDeviceCode) 'tok'
+# Den echten Browser-Weg wiederherstellen - er wird unten selbst geprüft.
+Invoke-Expression $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'Get-GraphTokenBrowser' }, $false)[0].Extent.Text
+$pAst = $ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'UseDeviceCode' }
+$sets = @($pAst.Attributes | ForEach-Object { $_.NamedArguments | Where-Object ArgumentName -eq 'ParameterSetName' | ForEach-Object { $_.Argument.Value } }) | Sort-Object
+T '-UseDeviceCode bei Gruppe und Postfach' ($sets -join ',') 'Group,Mailbox'
+function Umgebende-Funktion($a) {
+    for ($p = $a.Parent; $p; $p = $p.Parent) { if ($p -is [System.Management.Automation.Language.FunctionDefinitionAst]) { return $p.Name } }
+    ''
+}
+$wege = @($ast.FindAll({ $args[0] -is [System.Management.Automation.Language.CommandAst] -and $args[0].GetCommandName() -match '^Get-GraphToken(Browser|DeviceCode)$' }, $true))
+T 'Anmeldewege nur aus Get-GraphAccessToken aufgerufen' (@($wege | Where-Object { (Umgebende-Funktion $_) -ne 'Get-GraphAccessToken' }).Count) 0
+T 'beide Anmeldewege angeschlossen' $wege.Count 2
+$ablauf = @($ast.FindAll({ $args[0] -is [System.Management.Automation.Language.CommandAst] -and $args[0].GetCommandName() -eq 'Get-GraphAccessToken' }, $true) |
+            Where-Object { $_.Extent.Text -match '-UseDeviceCode:\$UseDeviceCode' -and $_.Extent.Text -match '-AccessToken \$AccessToken' })
+T 'Gruppe und Postfach reichen Token/-UseDeviceCode durch' $ablauf.Count 2
+
+Write-Output "`n######## Anmeldung: lokaler Port, ohne echten Browser ########"
+# Start-Process wird ersetzt: statt eines Browsers schickt ein Hintergrund-Runspace erst eine fremde
+# Anfrage, dann die Rückkehr mit Code und state an die redirect_uri aus der Anmelde-URL.
+$script:gesehen = $null; $script:tokenBody = $null
+function Start-Process {
+    param($FilePath)
+    $script:gesehen = $FilePath
+    $qs = @{}; foreach ($p in ($FilePath -split '\?', 2)[1] -split '&') { $k, $v = $p -split '=', 2; $qs[$k] = [uri]::UnescapeDataString($v) }
+    $ps = [powershell]::Create()
+    [void]$ps.AddScript({
+        param($port, $state)
+        foreach ($pfad in '/favicon.ico', "/?code=testcode&state=$state") {
+            $c = New-Object Net.Sockets.TcpClient('127.0.0.1', $port)
+            $s = $c.GetStream(); $b = [Text.Encoding]::ASCII.GetBytes("GET $pfad HTTP/1.1`r`nHost: localhost`r`n`r`n")
+            $s.Write($b, 0, $b.Length); (New-Object IO.StreamReader($s)).ReadToEnd() | Out-Null; $c.Close()
+        }
+    }).AddArgument(([uri]$qs['redirect_uri']).Port).AddArgument($qs['state'])
+    $script:rs = $ps; $script:rsHandle = $ps.BeginInvoke()
+}
+function Invoke-RestMethod { param($Method, $Uri, $Body) $script:tokenBody = $Body; [pscustomobject]@{ access_token = "at:$($Body.code)" } }
+$tok = Get-GraphTokenBrowser -Scope 'Group.Read.All' -Tenant 'contoso.com' -TimeoutSeconds 20 6>$null
+if ($script:rs) { $script:rs.EndInvoke($script:rsHandle) | Out-Null; $script:rs.Dispose() }
+T 'Token aus dem Code'                $tok 'at:testcode'
+T 'redirect_uri ist localhost:Port'   ($script:tokenBody.redirect_uri -match '^http://localhost:\d+/$') $true
+T 'Anmelde-URL: S256'                 ($script:gesehen -match 'code_challenge_method=S256') $true
+$ch = [regex]::Match($script:gesehen, 'code_challenge=([^&]+)').Groups[1].Value
+T 'Verifier passt zur Challenge'      (Get-PkceChallenge $script:tokenBody.code_verifier) $ch
+T 'Tenant in der URL'                 ($script:gesehen -match '^https://login\.microsoftonline\.com/contoso\.com/oauth2/v2\.0/authorize\?') $true
+$port = ([uri]$script:tokenBody.redirect_uri).Port
+$frei = $true; try { $c = New-Object Net.Sockets.TcpClient('127.0.0.1', $port); $c.Close(); $frei = $false } catch { }
+T 'Port danach wieder geschlossen'    $frei $true
+function Start-Process { param($FilePath) }   # niemand kommt zurück
+$m = try { Get-GraphTokenBrowser -Scope 'x' -TimeoutSeconds 1 6>$null; 'kein Fehler' } catch { "$_" }
+T 'Frist: Hinweis auf -UseDeviceCode' ($m -match 'Keine Anmeldung im Browser.*-UseDeviceCode') $true
+Remove-Item Function:\Start-Process, Function:\Invoke-RestMethod
 
 Write-Output "`n######## Ganzer Lauf gegen einen Ordner ########"
 $tmp = Join-Path $env:TEMP ('dmarc-' + [guid]::NewGuid().ToString('N'))

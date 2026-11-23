@@ -35,10 +35,15 @@
     .\DMARC-Bericht-<Datum>.html im aktuellen Ordner.
 
 .PARAMETER AccessToken
-    Vorhandenes Graph-Token statt der Anmeldung per Gerätecode.
+    Vorhandenes Graph-Token statt einer Anmeldung.
 
 .PARAMETER Tenant
     Tenant für die Anmeldung (Domain oder ID). Standard 'organizations'.
+
+.PARAMETER UseDeviceCode
+    Anmeldung per Gerätecode statt im Browser - für Rechner ohne Browser oder Sitzungen, in denen
+    sich keiner öffnen lässt. Standard ist die Anmeldung im Browser: Das Skript öffnet ihn selbst
+    und nimmt die Antwort auf http://localhost an einem freien Port entgegen (PKCE).
 
 .PARAMETER NoReverseDns
     Keine PTR-Abfragen - schneller, aber ohne Zuordnung zu Diensten über den Hostnamen.
@@ -49,6 +54,8 @@
     .\Invoke-DmarcReportAnalyzer.ps1 -GroupMailbox dmarc@contoso.onmicrosoft.com -Days 14
 .EXAMPLE
     .\Invoke-DmarcReportAnalyzer.ps1 -Mailbox dmarc-reports@contoso.com -OutputPath C:\Temp\dmarc.html
+.EXAMPLE
+    .\Invoke-DmarcReportAnalyzer.ps1 -GroupMailbox dmarc@contoso.onmicrosoft.com -UseDeviceCode
 #>
 [CmdletBinding(DefaultParameterSetName = 'Folder')]
 param(
@@ -59,11 +66,12 @@ param(
     [string]$OutputPath,
     [Parameter(ParameterSetName = 'Group')][Parameter(ParameterSetName = 'Mailbox')][string]$AccessToken,
     [Parameter(ParameterSetName = 'Group')][Parameter(ParameterSetName = 'Mailbox')][string]$Tenant = 'organizations',
+    [Parameter(ParameterSetName = 'Group')][Parameter(ParameterSetName = 'Mailbox')][switch]$UseDeviceCode,
     [switch]$NoReverseDns
 )
 
 # Einzige Stelle fuer die Versionsnummer; Build und Release-Tag lesen sie hier aus.
-$script:Version = '1.0.0'
+$script:Version = '1.1.0'
 
 #region ------------------------------------------------------------ Einlesen
 
@@ -536,14 +544,124 @@ svg text{fill:var(--mut);font-size:10px}
 
 #region ------------------------------------------------------------ Graph
 
-function Get-GraphToken {
+$script:GraphClientId = '14d82eec-204b-4c2f-b7e8-296a70dab67e'   # Microsoft Graph Command Line Tools
+
+function Get-GraphAccessToken {
+    <# Einziger Weg zum Token: vorhandenes Token, sonst Browser (Standard), sonst Gerätecode. #>
+    param([string]$Scope, [string]$Tenant = 'organizations', [string]$AccessToken, [switch]$UseDeviceCode)
+    if ($AccessToken) { return $AccessToken }
+    if ($UseDeviceCode) { return Get-GraphTokenDeviceCode -Scope $Scope -Tenant $Tenant }
+    Get-GraphTokenBrowser -Scope $Scope -Tenant $Tenant
+}
+
+function ConvertTo-Base64Url {
+    param([byte[]]$Bytes)
+    [Convert]::ToBase64String($Bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+}
+
+function New-PkceVerifier {
+    <# 32 Zufallsbytes -> 43 Zeichen base64url (RFC 7636, 4.1). #>
+    $b = New-Object byte[] 32
+    $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($b) } finally { $rng.Dispose() }
+    ConvertTo-Base64Url $b
+}
+
+function Get-PkceChallenge {
+    <# S256: base64url(SHA256(ASCII(verifier))) (RFC 7636, 4.2). #>
+    param([Parameter(Mandatory)][string]$Verifier)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { ConvertTo-Base64Url $sha.ComputeHash([Text.Encoding]::ASCII.GetBytes($Verifier)) } finally { $sha.Dispose() }
+}
+
+function ConvertFrom-AuthRedirect {
     <#
-        Anmeldung per Gerätecode über REST mit der Microsoft-Graph-Kommandozeilen-App.
-        Bewusst ohne Graph-Modul: Connect-MgGraph scheitert in Hosts ohne Konsole am
-        Listener-Fehler (gemessen 20.11.2026).
+        Wertet die erste Zeile der HTTP-Anfrage aus, mit der der Browser nach der Anmeldung auf den
+        lokalen Port zurückkommt. Liefert den Code; $null für fremde Anfragen (favicon, leere
+        Vorab-Verbindungen), die einfach übergangen werden. Fehler und falscher state werfen.
+    #>
+    param([string]$RequestLine, [Parameter(Mandatory)][string]$ExpectedState)
+    if ($RequestLine -notmatch '^GET\s+/?\?(\S*)\s') { return $null }
+    $q = @{}
+    foreach ($pair in ($Matches[1] -split '&')) {
+        if (-not $pair) { continue }
+        $k, $v = $pair -split '=', 2
+        $q[[uri]::UnescapeDataString($k.Replace('+', ' '))] = [uri]::UnescapeDataString("$v".Replace('+', ' '))
+    }
+    if (-not ($q.ContainsKey('code') -or $q.ContainsKey('error'))) { return $null }
+    if ($q['state'] -ne $ExpectedState) { throw 'Anmeldung verworfen: Die Antwort an den lokalen Port gehört nicht zu dieser Anmeldung (state passt nicht).' }
+    if ($q['error']) {
+        $txt = if ($q['error'] -eq 'access_denied') { 'Anmeldung abgelehnt oder abgebrochen' } else { 'Anmeldung fehlgeschlagen' }
+        throw "$txt ($($q['error'])): $($q['error_description'])"
+    }
+    $q['code']
+}
+
+function Get-GraphTokenBrowser {
+    <#
+        Anmeldung im Browser: Autorisierungscode mit PKCE (S256), Rückkehr auf http://localhost:<freier Port>.
+        Der Port wird per TcpListener nur auf der Loopback-Adresse geöffnet - ohne URL-ACL,
+        ohne Adminrechte, ohne Firewall-Freigabe. Bei Microsoft ist für diese App http://localhost
+        registriert; der Port ist bei localhost frei wählbar.
+    #>
+    param([string]$Scope, [string]$Tenant = 'organizations', [int]$TimeoutSeconds = 300)
+    $base = "https://login.microsoftonline.com/$Tenant/oauth2/v2.0"
+    $verifier = New-PkceVerifier
+    $state = New-PkceVerifier
+    $listeners = @()
+    $v4 = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0)
+    $v4.Start(); $listeners += $v4
+    $port = ([Net.IPEndPoint]$v4.LocalEndpoint).Port
+    # localhost kann im Browser auch auf ::1 auflösen - denselben Port dort mit öffnen, wenn möglich.
+    try { $v6 = New-Object Net.Sockets.TcpListener([Net.IPAddress]::IPv6Loopback, $port); $v6.Start(); $listeners += $v6 } catch { }
+    $redirect = "http://localhost:$port/"
+    $scopes = "https://graph.microsoft.com/$Scope offline_access"
+    $url = "$base/authorize?client_id=$($script:GraphClientId)&response_type=code&response_mode=query" +
+           "&redirect_uri=$([uri]::EscapeDataString($redirect))&scope=$([uri]::EscapeDataString($scopes))" +
+           "&state=$state&code_challenge=$(Get-PkceChallenge $verifier)&code_challenge_method=S256&prompt=select_account"
+    $code = $null
+    try {
+        Write-Host 'Anmeldung im Browser - falls sich keiner öffnet, diese Adresse aufrufen:' -ForegroundColor Yellow
+        Write-Host $url -ForegroundColor Yellow
+        try { Start-Process $url } catch { Write-Warning "Browser ließ sich nicht starten: $($_.Exception.Message)" }
+        $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+        while (-not $code) {
+            if ((Get-Date) -ge $deadline) {
+                throw "Keine Anmeldung im Browser innerhalb von $([math]::Ceiling($TimeoutSeconds / 60)) Minuten. Skript neu starten - oder mit -UseDeviceCode per Gerätecode anmelden."
+            }
+            $l = $listeners | Where-Object { $_.Pending() } | Select-Object -First 1
+            if (-not $l) { Start-Sleep -Milliseconds 200; continue }
+            $client = $l.AcceptTcpClient()
+            try {
+                $stream = $client.GetStream(); $stream.ReadTimeout = 5000
+                $line = $null
+                try { $line = (New-Object IO.StreamReader($stream, [Text.Encoding]::ASCII)).ReadLine() } catch { }
+                $err = $null
+                try { $code = ConvertFrom-AuthRedirect -RequestLine $line -ExpectedState $state } catch { $err = $_ }
+                $msg = if ($err) { 'Anmeldung fehlgeschlagen - Details im PowerShell-Fenster.' }
+                       elseif ($code) { 'Anmeldung abgeschlossen. Dieses Fenster kann geschlossen werden.' } else { $null }
+                $status = if ($msg) { '200 OK' } else { '404 Not Found' }
+                $body = [Text.Encoding]::UTF8.GetBytes("<!doctype html><meta charset=`"utf-8`"><title>DmarcReportAnalyzer</title><p style=`"font-family:sans-serif`">$msg</p>")
+                $head = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 $status`r`nContent-Type: text/html; charset=utf-8`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n")
+                try { $stream.Write($head, 0, $head.Length); $stream.Write($body, 0, $body.Length); $stream.Flush() } catch { }
+                if ($err) { throw $err }
+            } finally { $client.Close() }
+        }
+    } finally { foreach ($x in $listeners) { $x.Stop() } }
+    $t = Invoke-RestMethod -Method POST -Uri "$base/token" -Body @{
+        grant_type = 'authorization_code'; client_id = $script:GraphClientId; code = $code
+        redirect_uri = $redirect; code_verifier = $verifier; scope = $scopes }
+    $t.access_token
+}
+
+function Get-GraphTokenDeviceCode {
+    <#
+        Anmeldung per Gerätecode über REST mit der Microsoft-Graph-Kommandozeilen-App (-UseDeviceCode).
+        Für Rechner ohne Browser. Bewusst ohne Graph-Modul: Connect-MgGraph scheitert in Hosts ohne
+        Konsole am Listener-Fehler (gemessen 20.11.2026).
     #>
     param([string]$Scope, [string]$Tenant = 'organizations')
-    $client = '14d82eec-204b-4c2f-b7e8-296a70dab67e'
+    $client = $script:GraphClientId
     $base = "https://login.microsoftonline.com/$Tenant/oauth2/v2.0"
     $dc = Invoke-RestMethod -Method POST -Uri "$base/devicecode" -Body @{ client_id = $client; scope = "https://graph.microsoft.com/$Scope" }
     Write-Host $dc.message -ForegroundColor Yellow
@@ -644,12 +762,12 @@ switch ($PSCmdlet.ParameterSetName) {
     }
     'Group' {
         $origin = "Gruppenpostfach $GroupMailbox"
-        $tok = if ($AccessToken) { $AccessToken } else { Get-GraphToken -Scope 'Group.Read.All' -Tenant $Tenant }
+        $tok = Get-GraphAccessToken -Scope 'Group.Read.All' -Tenant $Tenant -AccessToken $AccessToken -UseDeviceCode:$UseDeviceCode
         $files = @(Get-GroupReportAttachments -Group $GroupMailbox -Token $tok -Since $mailSince)
     }
     'Mailbox' {
         $origin = "Postfach $Mailbox"
-        $tok = if ($AccessToken) { $AccessToken } else { Get-GraphToken -Scope 'Mail.Read.Shared' -Tenant $Tenant }
+        $tok = Get-GraphAccessToken -Scope 'Mail.Read.Shared' -Tenant $Tenant -AccessToken $AccessToken -UseDeviceCode:$UseDeviceCode
         $files = @(Get-MailboxReportAttachments -Mailbox $Mailbox -Token $tok -Since $mailSince)
     }
 }

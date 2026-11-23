@@ -20,21 +20,34 @@ die Daten verlassen den Rechner nicht.
 | `-Mailbox` | persönliches oder freigegebenes Postfach mit Vollzugriff; delegiert `Mail.Read.Shared` |
 | `-Days` | Zeitraum, Standard 30 |
 | `-OutputPath` | HTML-Datei; die CSV entsteht daneben. Fehlende Ordner werden angelegt |
+| `-UseDeviceCode` | Anmeldung per Gerätecode statt im Browser |
 | `-AccessToken`, `-Tenant` | vorhandenes Graph-Token bzw. Tenant für die Anmeldung |
 | `-NoReverseDns` | keine PTR-Abfragen – schneller, aber ohne Zuordnung zu Diensten |
 
-**Anmeldung.** Bei `-GroupMailbox` und `-Mailbox` meldet sich das Skript per Gerätecode an, und
-zwar mit der App *Microsoft Graph Command Line Tools*. Anmelden muss sich **der Benutzer, der
-Zugriff auf die Gruppe bzw. das Postfach hat**, kein Administrator. Ein Graph-Modul ist nicht
-nötig.
+**Anmeldung.** Bei `-GroupMailbox` und `-Mailbox` öffnet das Skript den Browser zur Anmeldung,
+und zwar mit der App *Microsoft Graph Command Line Tools*. Die Antwort nimmt es auf
+`http://localhost` an einem freien Port entgegen; der Port lauscht nur lokal, braucht keine
+Adminrechte und keine Firewall-Freigabe und schließt nach der Anmeldung wieder. Der Ablauf ist
+der Autorisierungscode mit PKCE. Öffnet sich kein Browser, steht die Adresse auch im Fenster.
+Nach 5 Minuten ohne Anmeldung bricht das Skript mit einem Hinweis ab.
+
+Auf Rechnern ohne Browser, etwa auf einem Server Core oder in einer Sitzung ohne Desktop, gibt
+es den Gerätecode als Ausweichweg mit `-UseDeviceCode`. Dann meldest du dich auf einem
+beliebigen Gerät unter microsoft.com/devicelogin mit dem angezeigten Code an. Der Code gilt etwa
+15 Minuten.
+
+Anmelden muss sich in beiden Fällen **der Benutzer, der Zugriff auf die Gruppe bzw. das Postfach
+hat**, kein Administrator. Ein Graph-Modul ist nicht nötig.
 
 **Einmalige Administratorzustimmung bei `-GroupMailbox`.** `Group.Read.All` braucht laut
 Microsoft auch delegiert eine Administratorzustimmung. Hat im Tenant noch niemand der App
 *Microsoft Graph Command Line Tools* dieses Recht gewährt, muss ein Administrator einmal
 zustimmen, z. B. bei seiner eigenen ersten Anmeldung mit „Im Namen der Organisation zustimmen“.
 Danach genügt jedem berechtigten Benutzer die eigene Anmeldung. `Mail.Read.Shared` für
-`-Mailbox` braucht keine Administratorzustimmung. Der Gerätecode läuft bewusst über REST, weil `Connect-MgGraph` in Hosts ohne Konsole mit
-„An error occurred when writing to a listener“ scheitert.
+`-Mailbox` braucht keine Administratorzustimmung.
+
+Beide Anmeldewege laufen bewusst über REST statt über das Graph-Modul, weil `Connect-MgGraph` in
+Hosts ohne Konsole mit „An error occurred when writing to a listener“ scheitert.
 
 **Exitcodes.** `0` = Bericht geschrieben, `2` = keine DMARC-Daten im Zeitraum.
 
@@ -78,7 +91,9 @@ geht. Der Bericht ist eine einzelne Datei ohne externe Skripte, Schriften oder B
 
 Die Tests arbeiten mit künstlichen Reports, also Beispieldomains und Dokumentations-Adressen nach
 RFC 5737, als `.xml`, `.gz` und `.zip`, ohne Netz und ohne Postfach. Echte Report-Daten gehören
-nicht ins Repo.
+nicht ins Repo. Die Browser-Anmeldung wird ohne Browser und ohne Microsoft geprüft: PKCE gegen
+den Testvektor aus RFC 7636, und der lokale Port mit einer simulierten Rückkehr. Die echte
+Anmeldung bei Microsoft deckt der Test nicht ab.
 
 ## Release
 
