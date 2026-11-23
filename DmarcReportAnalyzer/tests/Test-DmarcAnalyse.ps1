@@ -13,7 +13,9 @@ foreach ($fn in 'ConvertFrom-DmarcAttachment', 'ConvertFrom-DmarcXml', 'Get-Dmar
                 'Test-DomainRelated', 'Get-DmarcRowFinding', 'Get-FindingLabel', 'Format-DayList',
                 'Get-DmarcSources', 'Get-DmarcDomainSummary', 'Get-DmarcRecommendation', 'New-DmarcHtmlReport',
                 'Get-GraphPages', 'Get-GraphAccessToken', 'ConvertTo-Base64Url', 'New-PkceVerifier',
-                'Get-PkceChallenge', 'ConvertFrom-AuthRedirect', 'Get-GraphTokenBrowser') {
+                'Get-PkceChallenge', 'ConvertFrom-AuthRedirect', 'Get-GraphTokenBrowser',
+                'Test-IpInCidr', 'Test-Microsoft365Ip', 'Get-ReporterTargets', 'Select-TraceCandidates',
+                'Get-TraceCandidates') {
     $def = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq $fn }, $false)
     if (-not $def) { throw "Funktion nicht gefunden: $fn" }
     Invoke-Expression $def[0].Extent.Text
@@ -198,6 +200,77 @@ T 'Befund mit Anzahl im HTML'    ($bh -match 'kein DKIM, nur SPF: 4') $true
 T 'Lesehilfe vorhanden'          ($bh -match 'So liest du den Bericht') $true
 T 'keine externen Quellen'      ($html -match '(src|href)\s*=\s*["'']https?://') $false
 
+Write-Output "`n######## Einzelheiten: wohin, Grund, Selektor ########"
+function RecVoll($ip, $count, $dkim, $spf, $to = '', $reason = '', $sel = 'selector1', $auth = $true) {
+    $dk = if ($auth) { "<dkim><domain>contoso.com</domain><selector>$sel</selector><result>$dkim</result></dkim>" } else { '' }
+    $id = '<header_from>contoso.com</header_from>' + $(if ($to) { "<envelope_to>$to</envelope_to>" })
+    $rs = if ($reason) { "<reason><type>$reason</type><comment>per Liste</comment></reason>" } else { '' }
+@"
+  <record><row><source_ip>$ip</source_ip><count>$count</count>
+    <policy_evaluated><disposition>none</disposition><dkim>$dkim</dkim><spf>$spf</spf>$rs</policy_evaluated></row>
+    <identifiers>$id</identifiers>
+    <auth_results>$dk<spf><domain>contoso.com</domain><result>$spf</result></spf></auth_results>
+  </record>
+"@
+}
+$ev = Rep 'google.com' 'r-ev' '2026-11-16' '2026-11-17' @(
+    (RecVoll '192.0.2.30' 3 'fail' 'pass' 'gmail.com' '' 'selector1' $false),
+    (RecVoll '192.0.2.31' 2 'fail' 'fail' '' 'mailing_list'),
+    (RecVoll '192.0.2.32' 4 'pass' 'pass' '' '' 's2'))
+$evr = @(Get-DmarcRows -Reports @(ConvertFrom-DmarcXml -Xml $ev))
+$z30 = $evr | Where-Object SourceIp -eq '192.0.2.30'
+T 'envelope_to gelesen'          $z30.EnvelopeTo 'gmail.com'
+T 'Grund gelesen'                ($evr | Where-Object SourceIp -eq '192.0.2.31').Reason 'mailing_list: per Liste'
+T 'Selektor gelesen'             ($evr | Where-Object SourceIp -eq '192.0.2.32').DkimSelector 'contoso.com:s2'
+T 'Grund mailing_list -> Weiterleitung' (Get-DmarcRowFinding ($evr | Where-Object SourceIp -eq '192.0.2.31')) 'Weiterleitung'
+T 'ohne Grund bleibt es NurSpf'  (Get-DmarcRowFinding $z30) 'NurSpf'
+$evs = @(Get-DmarcSources -Rows $evr)
+$eh = New-DmarcHtmlReport -Domains @(Get-DmarcDomainSummary -Rows $evr) -Sources $evs -Recommendations @() -Rows $evr -Title 'T' -Origin 'T'
+T 'Einzelheiten unter der Quelle' ($eh -match "Einzelheiten \(1 Datens") $true
+T 'Einzelheiten nennen Ziel'     ($eh -match '16\.11\.2026 &#183; google\.com &#183; 3 Mails &#183; kein DKIM, nur SPF &#183; an gmail\.com') $true
+T 'ohne Signatur benannt'        ($eh -match 'DKIM: keine Signatur') $true
+T 'saubere Quelle ohne Einzelheiten' (($eh -split "<tr id='").Where({ $_ -like "$(($evs | Where-Object SourceIp -eq '192.0.2.32').Id)'*" })[0] -match "class='det'") $false
+
+Write-Output "`n######## Microsoft 365 über Adressbereiche ########"
+T 'IPv4 im Netz'                 (Test-IpInCidr '40.92.17.3' '40.92.0.0/15') $true
+T 'IPv4 knapp daneben'           (Test-IpInCidr '40.94.0.1' '40.92.0.0/15') $false
+T 'IPv6 im Netz'                 (Test-IpInCidr '2a01:111:f403:c201::6' '2a01:111:f400::/48') $false
+T 'IPv6 im /40'                  (Test-IpInCidr '2a01:111:f403:c201::6' '2a01:111:f400::/40') $true
+T 'Familie gemischt'             (Test-IpInCidr '40.92.1.1' '2a01:111:f400::/48') $false
+T 'Unsinn wirft nicht'           (Test-IpInCidr 'kaputt' '40.92.0.0/15') $false
+T 'ganze Liste'                  (Test-Microsoft365Ip '52.101.65.132' @('40.92.0.0/15', '52.100.0.0/14')) $true
+
+Write-Output "`n######## Message Trace: Kandidaten ########"
+T 'Melder Google'                ((Get-ReporterTargets 'google.com') -join ',') 'gmail.com,googlemail.com'
+T 'Enterprise Outlook offen'     ($null -eq (Get-ReporterTargets 'Enterprise Outlook')) $true
+T 'Domain als Melder'            ((Get-ReporterTargets 'mail.de') -join ',') 'mail.de'
+$tr = @(
+    [pscustomobject]@{ Received = [datetime]'2026-11-16T10:00:00'; SenderAddress = 'a@contoso.com'; RecipientAddress = 'x@kunde.example'; Subject = 'alt'; Status = 'Delivered' },
+    [pscustomobject]@{ Received = [datetime]'2026-11-16T09:00:00'; SenderAddress = 'b@contoso.com'; RecipientAddress = 'y@gmail.com'; Subject = 'passt'; Status = 'Delivered' },
+    [pscustomobject]@{ Received = [datetime]'2026-11-16T11:00:00'; SenderAddress = 'c@contoso.com'; RecipientAddress = 'z@sub.gmail.com.evil.example'; Subject = 'falle'; Status = 'Delivered' })
+$k = @(Select-TraceCandidates -Trace $tr -Targets @('gmail.com'))
+T 'passende zuerst'              $k[0].Subject 'passt'
+T 'gmail.com.evil passt nicht'   ($k | Where-Object Subject -eq 'falle').Passt $false
+T 'Grenze greift'                @(Select-TraceCandidates -Trace $tr -Targets @() -Max 2).Count 2
+$nie = [pscustomobject]@{ Received = [datetime]'2026-11-16T12:00:00'; SenderAddress = 'd@contoso.com'; RecipientAddress = 'w@gmail.com'; Subject = 'abgelehnt'; Status = 'Failed' }
+T 'nie zugestellt passt nicht'   (@(Select-TraceCandidates -Trace @($nie) -Targets @('gmail.com'))[0].Passt) $false
+# HtmlEncode schreibt · als &#183; (Zeichen 160-255 werden kodiert).
+# Abfrage ohne Exchange: Get-MessageTraceV2 als Attrappe, die mitschreibt.
+$script:abgefragt = @()
+function Get-MessageTraceV2 { param($SenderAddress, $StartDate, $EndDate, $ResultSize, $ErrorAction)
+    $script:abgefragt += "$SenderAddress|$($StartDate.ToString('yyyy-MM-dd'))|$($EndDate.ToString('yyyy-MM-dd'))"; $tr }
+$tc = Get-TraceCandidates -Sources $evs -Rows $evr
+$id30 = ($evs | Where-Object SourceIp -eq '192.0.2.30').Id
+T 'Abfrage Absender und Tag'     ($script:abgefragt -join ';') '*@contoso.com|2026-11-16|2026-11-17'
+T 'Kandidaten je Quelle'         $tc[$id30].Mails[0].Subject 'passt'
+T 'eingrenzbar über envelope_to' $tc[$id30].Eingrenzbar $true
+T 'Weiterleitung ohne Abfrage'   $tc.ContainsKey(($evs | Where-Object SourceIp -eq '192.0.2.31').Id) $false
+T 'saubere Quelle ohne Abfrage'  $tc.ContainsKey(($evs | Where-Object SourceIp -eq '192.0.2.32').Id) $false
+$th = New-DmarcHtmlReport -Domains @(Get-DmarcDomainSummary -Rows $evr) -Sources $evs -Recommendations @() -Rows $evr -Title 'T' -Origin 'T' -Trace $tc
+T 'Trace im HTML'                ($th -match 'Message Trace an diesen Tagen: 3 Mails von @contoso\.com, davon 1 an') $true
+T 'Trace-Zeile mit Betreff'      ($th -match 'b@contoso\.com → y@gmail\.com &#183; Betreff: passt') $true
+Remove-Item Function:\Get-MessageTraceV2
+
 Write-Output "`n######## Graph-Seiten: unsortiert, ältere nur überspringen ########"
 # Attrappe für Invoke-Graph: zwei Seiten, die Daten NICHT absteigend sortiert (wie bei
 # Gruppen-Unterhaltungen am 20.11.2026 beobachtet).
@@ -294,16 +367,17 @@ try {
     [IO.File]::WriteAllText((Join-Path $tmp 'alt.xml'), $alt)
     [IO.File]::WriteAllBytes((Join-Path $tmp 'kaputt.zip'), [byte[]](0x50, 0x4B, 0x03, 0x04, 0x00))
     $out = Join-Path $tmp 'neu\unter\bericht.html'   # Zielordner gibt es noch nicht
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $skript -Path $tmp -Days 30 -OutputPath $out -NoReverseDns *> $null
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $skript -Path $tmp -Days 30 -OutputPath $out -NoReverseDns -NoMicrosoftRanges *> $null
     T 'Exitcode 0'                 $LASTEXITCODE 0
     T 'HTML geschrieben'           (Test-Path $out) $true
     $csv = @(Import-Csv ([IO.Path]::ChangeExtension($out, '.csv')) -Delimiter ';')
     T 'nur Reports im Zeitraum (2 Zeilen, nicht 3)' $csv.Count 2
     T 'CSV hat Befund je Zeile'    (($csv | Where-Object SourceIp -eq '198.51.100.7').Auffaellig) 'DMARC fail'
+    T 'CSV hat neue Spalten'       (@('EnvelopeTo', 'Reason', 'DkimSelector' | Where-Object { $csv[0].PSObject.Properties.Name -contains $_ }).Count) 3
     T 'kaputte Datei bricht nichts ab' ((Get-Content $out -Raw) -match 'Pass') $true
 
     $leer = Join-Path $tmp 'leer'; New-Item -ItemType Directory $leer | Out-Null
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $skript -Path $leer -OutputPath (Join-Path $tmp 'x.html') -NoReverseDns *> $null
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $skript -Path $leer -OutputPath (Join-Path $tmp 'x.html') -NoReverseDns -NoMicrosoftRanges *> $null
     T 'keine Daten -> Exitcode 2'  $LASTEXITCODE 2
 }
 finally { Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue }

@@ -33,7 +33,7 @@ Exchange-Verwaltungsshell auf dem Server, auf dem sie laufen. `EopMdoHardening`,
 Arbeitsplatzrechner, weil er die Sicht des Clients einnimmt. `TestMailboxFiller` nutzt weder
 Verwaltungsshell noch Modul: on-premises arbeitet er über EWS, gegen Exchange Online über
 Microsoft Graph. Auch `DmarcReportAnalyzer` braucht kein Modul; Postfächer liest er über
-Microsoft Graph per REST.
+Microsoft Graph per REST. Nur der Schalter `-MessageTrace` nutzt `ExchangeOnlineManagement`.
 
 Die Werkzeuge prüfen das selbst, statt mitten in der Arbeit mit „Begriff wird nicht erkannt"
 abzubrechen: PowerShell-Ausgabe, TLS 1.2, Modulversion, bestehende Anmeldung – und ob die

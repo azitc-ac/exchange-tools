@@ -48,6 +48,18 @@
 .PARAMETER NoReverseDns
     Keine PTR-Abfragen - schneller, aber ohne Zuordnung zu Diensten über den Hostnamen.
 
+.PARAMETER NoMicrosoftRanges
+    Die Adressbereiche von Exchange Online nicht laden. Standard ist, die öffentliche Liste von
+    Microsoft (endpoints.office.com) einmal abzurufen und Quellen darin als "Microsoft 365" zu
+    erkennen, auch ohne passenden Rückwärtsnamen. Gesendet wird dabei nur eine Zufallskennung.
+
+.PARAMETER MessageTrace
+    Zu jeder auffälligen Quelle die Mails aus dem Message Trace von Exchange Online suchen:
+    Absender @Domain an den Tagen des Befunds, passende Empfänger (Empfängerdomain aus dem
+    Report, sonst die Domains des meldenden Anbieters) zuerst. Braucht das Modul
+    ExchangeOnlineManagement und eine Anmeldung mit Leserecht auf den Message Trace; eine
+    bestehende Verbindung wird genutzt. Findet nur Mails, die durch den eigenen Tenant liefen.
+
 .EXAMPLE
     .\Invoke-DmarcReportAnalyzer.ps1 -Path C:\Reports
 .EXAMPLE
@@ -56,6 +68,8 @@
     .\Invoke-DmarcReportAnalyzer.ps1 -Mailbox dmarc-reports@contoso.com -OutputPath C:\Temp\dmarc.html
 .EXAMPLE
     .\Invoke-DmarcReportAnalyzer.ps1 -GroupMailbox dmarc@contoso.onmicrosoft.com -UseDeviceCode
+.EXAMPLE
+    .\Invoke-DmarcReportAnalyzer.ps1 -Mailbox dmarc-reports@contoso.com -MessageTrace
 #>
 [CmdletBinding(DefaultParameterSetName = 'Folder')]
 param(
@@ -67,11 +81,13 @@ param(
     [Parameter(ParameterSetName = 'Group')][Parameter(ParameterSetName = 'Mailbox')][string]$AccessToken,
     [Parameter(ParameterSetName = 'Group')][Parameter(ParameterSetName = 'Mailbox')][string]$Tenant = 'organizations',
     [Parameter(ParameterSetName = 'Group')][Parameter(ParameterSetName = 'Mailbox')][switch]$UseDeviceCode,
-    [switch]$NoReverseDns
+    [switch]$NoReverseDns,
+    [switch]$NoMicrosoftRanges,
+    [switch]$MessageTrace
 )
 
 # Einzige Stelle fuer die Versionsnummer; Build und Release-Tag lesen sie hier aus.
-$script:Version = '1.1.0'
+$script:Version = '1.2.0'
 
 #region ------------------------------------------------------------ Einlesen
 
@@ -158,6 +174,14 @@ function ConvertFrom-DmarcXml {
         $dkimAuth = @(foreach ($d in $rec.SelectNodes("./*[local-name()='auth_results']/*[local-name()='dkim']")) {
             '{0}={1}' -f (V $d 'domain'), (V $d 'result')
         })
+        $dkimSel = @(foreach ($d in $rec.SelectNodes("./*[local-name()='auth_results']/*[local-name()='dkim']")) {
+            $s = V $d 'selector'; if ($s) { '{0}:{1}' -f (V $d 'domain'), $s }
+        })
+        # Freiwillig (RFC 7489 Anhang C): Grund für eine abweichende Behandlung, z. B. forwarded.
+        $reason = @(foreach ($g in $rec.SelectNodes("./*[local-name()='row']/*[local-name()='policy_evaluated']/*[local-name()='reason']")) {
+            $ty = V $g 'type'; $co = V $g 'comment'
+            if ($co) { '{0}: {1}' -f $ty, $co } elseif ($ty) { $ty }
+        })
         $spfAuth = @(foreach ($s in $rec.SelectNodes("./*[local-name()='auth_results']/*[local-name()='spf']")) {
             '{0}={1}' -f (V $s 'domain'), (V $s 'result')
         })
@@ -172,6 +196,9 @@ function ConvertFrom-DmarcXml {
             DmarcPass    = ($dkimAligned -or $spfAligned)
             HeaderFrom   = (V $rec 'identifiers/header_from').ToLower()
             EnvelopeFrom = (V $rec 'identifiers/envelope_from').ToLower()
+            EnvelopeTo   = (V $rec 'identifiers/envelope_to').ToLower()
+            Reason       = ($reason -join '; ')
+            DkimSelector = ($dkimSel -join '; ')
             DkimAuth     = ($dkimAuth -join '; ')
             SpfAuth      = ($spfAuth -join '; ')
         }
@@ -199,6 +226,7 @@ function Get-DmarcRows {
                 SourceIp = $rec.SourceIp; Count = $rec.Count; Disposition = $rec.Disposition
                 DkimAligned = $rec.DkimAligned; SpfAligned = $rec.SpfAligned; DmarcPass = $rec.DmarcPass
                 HeaderFrom = $rec.HeaderFrom; EnvelopeFrom = $rec.EnvelopeFrom
+                EnvelopeTo = $rec.EnvelopeTo; Reason = $rec.Reason; DkimSelector = $rec.DkimSelector
                 DkimAuth = $rec.DkimAuth; SpfAuth = $rec.SpfAuth
                 Ptr = ''; Service = ''
             }
@@ -270,6 +298,8 @@ function Get-DmarcRowFinding {
     #>
     param($Row)
     if ("$($Row.Service)" -like 'Weiterleitung*') { return 'Weiterleitung' }
+    # Der Empfänger selbst meldet die Weiterleitung (policy_evaluated/reason).
+    if ("$($Row.Reason)" -match '(^|; )(forwarded|mailing_list|trusted_forwarder)\b') { return 'Weiterleitung' }
     if (-not $Row.DmarcPass) { return 'Fail' }
     $hf = if ($Row.HeaderFrom) { $Row.HeaderFrom } else { $Row.Domain }
     $broken = $false
@@ -434,12 +464,145 @@ function Get-DmarcRecommendation {
     }
 }
 
+function Test-IpInCidr {
+    <# Liegt die Adresse im Netz? IPv4 und IPv6, ohne .NET-8-Typen (läuft auch in Windows PowerShell 5.1). #>
+    param([string]$Ip, [string]$Cidr)
+    $teil = $Cidr -split '/', 2
+    $a = $null; $n = $null
+    if (-not [System.Net.IPAddress]::TryParse($Ip, [ref]$a) -or -not [System.Net.IPAddress]::TryParse($teil[0], [ref]$n)) { return $false }
+    if ($a.AddressFamily -ne $n.AddressFamily) { return $false }
+    $ab = $a.GetAddressBytes(); $nb = $n.GetAddressBytes()
+    $bits = if ($teil.Count -eq 2) { [int]$teil[1] } else { $ab.Length * 8 }
+    for ($i = 0; $i -lt $ab.Length -and $bits -gt 0; $i++) {
+        $m = if ($bits -ge 8) { 0xFF } else { (0xFF -shl (8 - $bits)) -band 0xFF }
+        if (($ab[$i] -band $m) -ne ($nb[$i] -band $m)) { return $false }
+        $bits -= 8
+    }
+    return $true
+}
+
+function Get-Microsoft365Ranges {
+    <#
+        Adressbereiche von Exchange Online aus der öffentlichen Liste von Microsoft. Ohne Netz oder
+        bei Fehlern leer - dann bleibt es bei der Erkennung über den Rückwärtsnamen.
+    #>
+    try {
+        $url = 'https://endpoints.office.com/endpoints/worldwide?ServiceAreas=Exchange&NoIPv6=false&clientrequestid=' + [guid]::NewGuid()
+        $liste = Invoke-RestMethod -Uri $url -TimeoutSec 20 -ErrorAction Stop
+        return @($liste | Where-Object { $_.ips } | ForEach-Object { $_.ips } | Sort-Object -Unique)
+    } catch {
+        Write-Warning "Adressbereiche von Microsoft nicht abrufbar ($($_.Exception.Message)) - Microsoft 365 nur über den Rückwärtsnamen erkannt."
+        return @()
+    }
+}
+
+function Test-Microsoft365Ip {
+    param([string]$Ip, [string[]]$Ranges)
+    foreach ($c in $Ranges) { if (Test-IpInCidr $Ip $c) { return $true } }
+    return $false
+}
+
+function Get-ReporterTargets {
+    <#
+        Empfängerdomains, die zu einem Melder gehören. $null = nicht eingrenzbar, etwa
+        "Enterprise Outlook" (Microsoft 365): Das kann jede Domain eines Tenants sein.
+    #>
+    param([string]$Reporter)
+    $o = "$Reporter".Trim().ToLower()
+    if ($o -match 'google') { return @('gmail.com', 'googlemail.com') }
+    if ($o -match 'outlook\.com') { return @('outlook.com', 'outlook.de', 'hotmail.com', 'hotmail.de', 'live.com', 'live.de', 'msn.com') }
+    if ($o -match 'yahoo') { return @('yahoo.com', 'yahoo.de', 'ymail.com', 'aol.com', 'aol.de') }
+    if ($o -match '^[a-z0-9-]+(\.[a-z0-9-]+)+$') { return @($o) }
+    return $null
+}
+
+function Select-TraceCandidates {
+    <#
+        Message-Trace-Zeilen -> Kandidaten für eine Quelle. Passend = zugestellt und Empfängerdomain
+        gleich oder Subdomain eines Ziels. Passende zuerst, dann neueste. Rein, testbar.
+    #>
+    param([object[]]$Trace, [string[]]$Targets, [int]$Max = 20)
+    $out = foreach ($m in @($Trace | Where-Object { $_ })) {
+        $rd = ("$($m.RecipientAddress)" -split '@')[-1].ToLower()
+        $passt = $false
+        foreach ($z in @($Targets | Where-Object { $_ })) { if ($rd -eq $z -or $rd.EndsWith(".$z")) { $passt = $true } }
+        # Nie zugestellt = nie beim Melder angekommen, kann also nicht im Report stehen.
+        if ("$($m.Status)" -eq 'Failed') { $passt = $false }
+        [pscustomobject]@{ Received = $m.Received; Sender = $m.SenderAddress; Recipient = $m.RecipientAddress
+                           Subject = $m.Subject; Status = $m.Status; Passt = $passt }
+    }
+    @($out | Sort-Object @{ Expression = 'Passt'; Descending = $true }, @{ Expression = 'Received'; Descending = $true } | Select-Object -First $Max)
+}
+
+function Get-TraceCandidates {
+    <#
+        Je auffälliger Quelle (DMARC fail, nur SPF, DKIM gebrochen) die Mails aus dem Message Trace:
+        Absender *@Domain an den Tagen des Befunds (je Tag eine Abfrage, je Domain und Tag nur
+        einmal). Ergebnis: Hashtable Quellen-Id -> @{ Anzahl; Passend; Eingrenzbar; Mails }.
+    #>
+    param([object[]]$Sources, [object[]]$Rows, [int]$MaxAbfragen = 40)
+    $ergebnis = @{}; $cache = @{}; $abfragen = 0
+    foreach ($s in $Sources) {
+        if ("$($s.Service)" -like 'Weiterleitung*' -or -not $s.Findings) { continue }
+        $tage = @(); foreach ($k in 'Fail', 'DkimGebrochen', 'NurSpf') { if ($s.Findings[$k]) { $tage += @($s.FindingDays[$k]) } }
+        $tage = @($tage | Where-Object { $_ } | Sort-Object -Unique)
+        if (-not $tage) { continue }
+        $eigene = @($Rows | Where-Object { $_.Domain -eq $s.Domain -and $_.SourceIp -eq $s.SourceIp -and (Get-DmarcRowFinding $_) -in 'Fail', 'DkimGebrochen', 'NurSpf' })
+        $ziele = @(); $offen = $false
+        foreach ($r in $eigene) {
+            if ($r.EnvelopeTo) { $ziele += $r.EnvelopeTo; continue }
+            $z = Get-ReporterTargets $r.Reporter
+            if ($null -eq $z) { $offen = $true } else { $ziele += $z }
+        }
+        $trace = @()
+        foreach ($tag in $tage) {
+            $key = "$($s.Domain)|$tag"
+            if (-not $cache.ContainsKey($key)) {
+                if ($abfragen -ge $MaxAbfragen) { Write-Warning "Message Trace: höchstens $MaxAbfragen Abfragen je Lauf, weitere Tage ausgelassen."; $cache[$key] = @(); continue }
+                $abfragen++
+                $von = [datetime]::SpecifyKind([datetime]$tag, [DateTimeKind]::Utc)
+                try {
+                    $cache[$key] = @(Get-MessageTraceV2 -SenderAddress "*@$($s.Domain)" -StartDate $von -EndDate $von.AddDays(1) -ResultSize 5000 -ErrorAction Stop)
+                } catch {
+                    Write-Warning "Message Trace für $($s.Domain) am $tag gescheitert: $($_.Exception.Message)"; $cache[$key] = @()
+                }
+            }
+            $trace += $cache[$key]
+        }
+        $ziele = @($ziele | Sort-Object -Unique)
+        $kand = @(Select-TraceCandidates -Trace $trace -Targets $ziele)
+        $ergebnis[$s.Id] = [pscustomobject]@{ Anzahl = $trace.Count; Passend = @($kand | Where-Object Passt).Count
+                                               Eingrenzbar = ($ziele.Count -gt 0 -and -not $offen); Mails = $kand }
+    }
+    return $ergebnis
+}
+
+function Connect-MessageTrace {
+    <# Bestehende Verbindung nutzen, sonst ExchangeOnlineManagement laden und anmelden. $false = nicht möglich. #>
+    if (Get-Command Get-MessageTraceV2 -ErrorAction SilentlyContinue) {
+        try { if (Get-ConnectionInformation -ErrorAction Stop | Where-Object State -eq 'Connected') { return $true } } catch { }
+    }
+    if (-not (Get-Module -ListAvailable ExchangeOnlineManagement)) {
+        Write-Warning 'Für -MessageTrace fehlt das Modul ExchangeOnlineManagement (Install-Module ExchangeOnlineManagement).'
+        return $false
+    }
+    try {
+        Import-Module ExchangeOnlineManagement -ErrorAction Stop
+        Connect-ExchangeOnline -ShowBanner:$false -ErrorAction Stop
+        return [bool](Get-Command Get-MessageTraceV2 -ErrorAction SilentlyContinue)
+    } catch {
+        Write-Warning "Anmeldung an Exchange Online gescheitert: $($_.Exception.Message)"
+        return $false
+    }
+}
+
 #endregion
 
 #region ------------------------------------------------------------ Darstellung
 
 function New-DmarcHtmlReport {
-    param([object[]]$Domains, [object[]]$Sources, [object[]]$Recommendations, [object[]]$Rows, [string]$Title, [string]$Origin)
+    param([object[]]$Domains, [object[]]$Sources, [object[]]$Recommendations, [object[]]$Rows, [string]$Title, [string]$Origin,
+          [hashtable]$Trace = @{})
     $e = { param($v) [System.Net.WebUtility]::HtmlEncode("$v") }
     $sb = New-Object System.Text.StringBuilder
     $fmtDate = { param($d) if ($d) { $d.ToString('dd.MM.yyyy') } else { '' } }
@@ -449,7 +612,7 @@ function New-DmarcHtmlReport {
 <title>$(& $e $Title)</title><style>
 :root{--bg:#fff;--fg:#1f2328;--mut:#59636e;--line:#d1d9e0;--ok:#1a7f37;--bad:#cf222e;--warn:#9a6700;--card:#f6f8fa;--hl:#fff8c5}
 @media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#9198a1;--line:#3d444d;--ok:#3fb950;--bad:#f85149;--warn:#d29922;--card:#151b23;--hl:#2e2a14}}
-tr.hl td{background:var(--hl)}tr:target td{outline:2px solid var(--warn)}a{color:inherit}
+tr.hl td{background:var(--hl)}tr.det td{border-bottom:1px solid var(--line);padding-top:0}tr.det details{margin:2px 0}tr:target td{outline:2px solid var(--warn)}a{color:inherit}
 details{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 14px;margin:14px 0}summary{cursor:pointer;font-weight:600}
 details li{margin:3px 0}.small{font-size:12px}
 body{background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,Segoe UI,sans-serif;margin:0;padding:16px;max-width:1200px;margin:auto}
@@ -470,6 +633,7 @@ svg text{fill:var(--mut);font-size:10px}
 <li><b>DMARC-Pass</b> heißt: SPF <i>oder</i> DKIM hat bestanden <i>und</i> passt zur Absenderdomain (&bdquo;aligned&ldquo;). Damit ist bestätigt, dass die Mail wirklich von dir kommt.</li>
 <li><b>DKIM ist das Wichtigere:</b> Die Signatur übersteht Weiterleitungen, SPF nicht. Ziel ist, dass jede eigene Quelle mit DKIM aligned ist. Eine Mail, die nur über SPF besteht, fällt nach einer Weiterleitung durch.</li>
 <li><b>Spalte &bdquo;Auffällig&ldquo;</b> (gelb hinterlegte Zeilen): <i>kein DKIM, nur SPF</i> - der Versandweg signiert nicht; <i>DKIM gebrochen, nur SPF</i> - signiert, aber die Mail wurde danach verändert; <i>zweite Signatur gebrochen</i> - eine gültige Signatur blieb übrig, harmlos; <i>Weiterleitung</i> - jemand hat deine Mail weitergeleitet, kein fremder Absender; <i>DMARC fail</i> - nicht bestanden: fremder Dienst, vergessener eigener Dienst oder Missbrauch.</li>
+<li><b>Einzelheiten</b> unter einer auffälligen Quelle: je Datensatz Tag, Melder, Anzahl, Empfängerdomain (falls gemeldet), SPF, DKIM mit Selektor, Return-Path und Grund (etwa <i>forwarded</i>). Mit <code>-MessageTrace</code> stehen darunter die passenden Mails aus dem Message Trace des eigenen Tenants.</li>
 <li><b>Empfehlungen</b> nennen die Tage und verlinken die betroffene Zeile. Alle Einzeldatensätze (je Report und Tag) stehen in der CSV daneben, mit derselben Spalte &bdquo;Auffaellig&ldquo;.</li>
 <li><b>Policy-Stufen:</b> p=none beobachtet nur, p=quarantine schickt Fehlschläge in den Junk-Ordner, p=reject weist sie ab. Eine Stufe weiter erst, wenn über mindestens 14 Tage nahezu alles besteht und keine Mail mehr allein an SPF hängt.</li>
 <li><b>Wie oft:</b> wöchentlich, solange du an der Policy drehst; sonst monatlich und nach jeder Änderung am Mailfluss (Connector, Gateway, neuer Versanddienst).</li>
@@ -534,6 +698,38 @@ svg text{fill:var(--mut);font-size:10px}
         $trc = if ($hl) { " class='hl'" } else { '' }
         $dkimCls = if ($s.DkimAligned -lt $s.Count -and "$($s.Service)" -notlike 'Weiterleitung*') { 'n warn' } else { 'n' }
         [void]$sb.Append("<tr id='$(& $e $s.Id)'$trc><td>$(& $e $s.Domain)</td><td>$src</td><td>$(& $e $s.Service)</td><td>$zeit</td><td class='n'>$($s.Count)</td><td class='n $cls'>$pct %</td><td class='$dkimCls'>$($s.DkimAligned)</td><td class='n'>$($s.SpfAligned)</td><td class='n'>$($s.Quarantined + $s.Rejected)</td><td class='small'>$(& $e $s.DkimResults)</td><td>$($auff -join '<br>')</td><td>$(& $e $s.Reporters)</td></tr>")
+        # Einzelheiten: die auffälligen Datensätze dieser Quelle - wann, wer meldet, wohin, wie.
+        $det = @($Rows | Where-Object { $_.Domain -eq $s.Domain -and $_.SourceIp -eq $s.SourceIp -and (Get-DmarcRowFinding $_) } | Sort-Object Begin -Descending)
+        if ($det.Count) {
+            [void]$sb.Append("<tr class='det'><td colspan='12'><details><summary>Einzelheiten ($($det.Count) Datensätze)</summary><ul class='small'>")
+            foreach ($r in ($det | Select-Object -First 50)) {
+                $teile = @($r.Begin.ToString('dd.MM.yyyy'), $r.Reporter, "$($r.Count) Mails", (Get-FindingLabel (Get-DmarcRowFinding $r)))
+                $teile += $(if ($r.EnvelopeTo) { "an $($r.EnvelopeTo)" } else { 'Empfängerdomain nicht gemeldet' })
+                $teile += "SPF $($r.SpfAuth)"
+                $teile += $(if ($r.DkimAuth) { "DKIM $($r.DkimAuth)" } else { 'DKIM: keine Signatur' })
+                if ($r.DkimSelector) { $teile += "Selektor $($r.DkimSelector)" }
+                if ($r.EnvelopeFrom) { $teile += "Return-Path $($r.EnvelopeFrom)" }
+                if ($r.Disposition -and $r.Disposition -ne 'none') { $teile += $r.Disposition }
+                if ($r.Reason) { $teile += "Grund $($r.Reason)" }
+                [void]$sb.Append("<li>$(& $e ($teile -join ' · '))</li>")
+            }
+            [void]$sb.Append('</ul>')
+            $tr = $Trace[$s.Id]
+            if ($tr) {
+                $wie = if ($tr.Eingrenzbar) { "davon $($tr.Passend) an Empfänger, die zum Melder passen (oben)" } else { 'der Melder lässt sich keiner Empfängerdomain zuordnen' }
+                [void]$sb.Append("<p class='mut small'>Message Trace an diesen Tagen: $($tr.Anzahl) Mails von @$(& $e $s.Domain), $(& $e $wie). Kandidaten, kein Nachweis - der Report nennt keine einzelne Mail.</p>")
+                if ($tr.Mails) {
+                    [void]$sb.Append('<ul class="small">')
+                    foreach ($m in $tr.Mails) {
+                        $mc = if ($m.Passt) { '' } else { " class='mut'" }
+                        $wann = if ($m.Received) { ([datetime]$m.Received).ToString('dd.MM.yyyy HH:mm') + ' UTC' } else { '' }
+                        [void]$sb.Append("<li$mc>$(& $e "$wann · $($m.Sender) → $($m.Recipient) · Betreff: $($m.Subject) · $($m.Status)")</li>")
+                    }
+                    [void]$sb.Append('</ul>')
+                }
+            }
+            [void]$sb.Append('</details></td></tr>')
+        }
     }
     [void]$sb.Append('</table></div>')
     [void]$sb.Append("<p class='mut'>&bdquo;Aligned&ldquo; heißt: Die Domain aus DKIM bzw. SPF passt zur Absenderdomain im From. DMARC besteht, wenn mindestens eins davon aligned ist. Alle Einzeldatensätze stehen in der CSV daneben.</p></body></html>")
@@ -789,22 +985,46 @@ if (-not $NoReverseDns) {
     foreach ($ip in $ips) { [void](Resolve-Ptr $ip) }
     foreach ($r in $rows) { $r.Ptr = $script:PtrCache[$r.SourceIp]; $r.Service = Get-SenderService $r.Ptr }
 }
+if (-not $NoMicrosoftRanges) {
+    # Viele Ausgänge von Exchange Online haben keinen sprechenden Rückwärtsnamen (vor allem IPv6).
+    $msRanges = @(Get-Microsoft365Ranges)
+    if ($msRanges.Count) {
+        $msIp = @{}
+        foreach ($ip in @($rows.SourceIp | Sort-Object -Unique)) { $msIp[$ip] = Test-Microsoft365Ip $ip $msRanges }
+        foreach ($r in $rows) { if (-not $r.Service -and $msIp[$r.SourceIp]) { $r.Service = 'Microsoft 365' } }
+    }
+}
 
 $domains = @(Get-DmarcDomainSummary -Rows $rows)
 $sources = @(Get-DmarcSources -Rows $rows)
 $recs    = @(Get-DmarcRecommendation -Domains $domains -Sources $sources)
+$trace   = @{}
+if ($MessageTrace) {
+    if (Connect-MessageTrace) {
+        Write-Host 'Message Trace für auffällige Quellen ...' -ForegroundColor Gray
+        $trace = Get-TraceCandidates -Sources $sources -Rows $rows
+    }
+}
 
 if (-not $OutputPath) { $OutputPath = Join-Path (Get-Location) ("DMARC-Bericht-{0}.html" -f (Get-Date -Format 'yyyy-MM-dd')) }
 # Relativ zum PowerShell-Ort auflösen, nicht zum Prozess-Arbeitsverzeichnis von .NET.
 $OutputPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputPath)
 $outDir = Split-Path $OutputPath -Parent
 if (-not (Test-Path -LiteralPath $outDir)) { New-Item -ItemType Directory -Path $outDir -Force | Out-Null }
-$html = New-DmarcHtmlReport -Domains $domains -Sources $sources -Recommendations $recs -Rows $rows -Title "DMARC-Bericht, letzte $Days Tage" -Origin $origin
+$html = New-DmarcHtmlReport -Domains $domains -Sources $sources -Recommendations $recs -Rows $rows -Title "DMARC-Bericht, letzte $Days Tage" -Origin $origin -Trace $trace
 [IO.File]::WriteAllText($OutputPath, $html, (New-Object Text.UTF8Encoding($true)))
 $csv = [IO.Path]::ChangeExtension($OutputPath, '.csv')
 $rows | Select-Object Domain, Reporter, ReportId, @{ n = 'Begin'; e = { $_.Begin.ToString('yyyy-MM-dd HH:mm') } }, @{ n = 'End'; e = { $_.End.ToString('yyyy-MM-dd HH:mm') } },
-    SourceIp, Ptr, Service, Count, DmarcPass, DkimAligned, SpfAligned, @{ n = 'Auffaellig'; e = { Get-FindingLabel (Get-DmarcRowFinding $_) } }, Disposition, HeaderFrom, EnvelopeFrom, DkimAuth, SpfAuth, Policy, Pct |
+    SourceIp, Ptr, Service, Count, DmarcPass, DkimAligned, SpfAligned, @{ n = 'Auffaellig'; e = { Get-FindingLabel (Get-DmarcRowFinding $_) } }, Disposition, HeaderFrom, EnvelopeFrom, EnvelopeTo, Reason, DkimAuth, DkimSelector, SpfAuth, Policy, Pct |
     Export-Csv -LiteralPath $csv -NoTypeInformation -Encoding UTF8 -Delimiter ';'
+if ($trace.Count) {
+    $traceCsv = [IO.Path]::ChangeExtension($OutputPath, '.trace.csv')
+    @(foreach ($s in $sources) { if ($trace[$s.Id]) { foreach ($m in $trace[$s.Id].Mails) {
+        [pscustomobject]@{ Domain = $s.Domain; SourceIp = $s.SourceIp; Received = $m.Received; Sender = $m.Sender
+                           Recipient = $m.Recipient; Subject = $m.Subject; Status = $m.Status; PasstZumMelder = $m.Passt } } } }) |
+        Export-Csv -LiteralPath $traceCsv -NoTypeInformation -Encoding UTF8 -Delimiter ';'
+    Write-Host "Trace:   $traceCsv" -ForegroundColor Green
+}
 
 Write-Host "Bericht: $OutputPath" -ForegroundColor Green
 Write-Host "CSV:     $csv" -ForegroundColor Green
