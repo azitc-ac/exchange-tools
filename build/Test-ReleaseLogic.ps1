@@ -169,13 +169,9 @@ Write-Output "`n######## E. Bundle-Zweig (AcmeExchange, ZIP) ########"
 $tool = 'AcmeExchange'
 $meta = Import-PowerShellDataFile "$tool/release.psd1"
 $ver = Get-ToolVersion -Path "$tool/$($meta.Main)"
-$stage = Join-Path $env:TEMP "bundle-test/$tool"
-if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
-New-Item -ItemType Directory -Force -Path $stage | Out-Null
-Copy-Item "$tool/*" $stage -Recurse -Force
-Get-ChildItem "$stage\*" -Include 'release.psd1', 'build-exe.ps1', 'Build-*.ps1', '.gitignore' -Recurse -Force | Remove-Item -Force
-$zip = "dist/$tool-$ver.zip"
-Compress-Archive -Path "$stage/*" -DestinationPath $zip -Force
+# Dasselbe Skript wie der Workflow - frueher stand hier eine eigene Kopie der Logik
+# mit anderer Ausschlussliste.
+$zip = & ./build/New-ReleaseBundle.ps1 -Tool $tool -Version $ver -OutDir dist
 
 # Das ZIP muss das Nötige enthalten und das UnNötige nicht.
 Add-Type -AssemblyName System.IO.Compression.FileSystem

@@ -96,16 +96,8 @@ jobs:
           }
 
           if ($meta.Bundle) {
-            # Build-Skripte und Release-Metadaten gehoeren nicht ins Auslieferungs-ZIP.
-            $stage = Join-Path $env:RUNNER_TEMP "bundle/$tool"
-            if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
-            New-Item -ItemType Directory -Force -Path $stage | Out-Null
-            Copy-Item "$tool/*" $stage -Recurse -Force
-            # -Include greift nur mit Wildcard im Pfad; ohne ihn bliebe die Liste leer.
-            # -Force, damit auch versteckte Dateien wie .gitignore erfasst werden.
-            Get-ChildItem "$stage\*" -Include 'release.psd1', '.gitignore' -Recurse -Force |
-              Remove-Item -Force
-            Compress-Archive -Path "$stage/*" -DestinationPath "dist/$tool-$ver.zip" -Force
+            # Ein Weg fuer Workflow und Test: build/Test-ReleaseBundle.ps1 prueft dasselbe Skript.
+            $null = & ./build/New-ReleaseBundle.ps1 -Tool $tool -Version $ver -OutDir dist
           }
 
           $files = Get-ChildItem dist -File
@@ -125,17 +117,9 @@ jobs:
           # Umlaute gehoeren NICHT in diesen Block: GitHub Actions legt ihn als .ps1
           # ohne BOM ab, und Windows PowerShell 5.1 liest den dann in der ANSI-Codepage -
           # aus "ausfuehren" wuerde "ausfÃ¼hren". Sichtbarer Text kommt deshalb aus
-          # Dateien, die hier ausdruecklich als UTF-8 gelesen werden.
-          $footer = [IO.File]::ReadAllText(
-            (Join-Path $PWD 'build\release-notes-footer.md'), [Text.Encoding]::UTF8)
-
-          $notes = @(
-            "Werkzeug ``$tool`` Version $ver aus dem Sammelrepo."
-            ''
-            $meta.Notes
-            ''
-            $footer.TrimEnd()
-          ) -join "`n"
+          # Dateien, die build/Get-ReleaseNotes.ps1 ausdruecklich als UTF-8 liest.
+          # Dasselbe Skript prueft build/Test-ReleaseBundle.ps1.
+          $notes = & ./build/Get-ReleaseNotes.ps1 -Tool $tool -Version $ver
 
           # Mehrzeilige Notizen ueber eine Datei: als Argument gingen Zeilenumbrueche
           # beim Uebergang an die native gh.exe verloren.

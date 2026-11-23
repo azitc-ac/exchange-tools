@@ -13,7 +13,7 @@
 #>
 
 # Einzige Stelle fuer die Versionsnummer; Build und Release-Tag lesen sie hier aus.
-$script:Version = '1.0.2'
+$script:Version = '1.0.3'
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -3791,17 +3791,18 @@ function Add-FbLog {
 function Add-FbExplain {
     param([string]$Direction)
     if ($Direction -eq 'A') {
-        Add-FbLog "  What happens behind this single request:" 'dim'
-        Add-FbLog "    1. the on-prem Availability service receives GetUserAvailability for a foreign address" 'dim'
-        Add-FbLog "    2. it looks the target domain up in its address spaces (IntraOrganizationConnector, or" 'dim'
-        Add-FbLog "       the older OrganizationRelationship / AvailabilityAddressSpace)" 'dim'
-        Add-FbLog "    3. it obtains a token for Exchange Online — OAuth via AuthServer + partner application" 'dim'
-        Add-FbLog "       (modern hybrid), or DAuth via the federation trust (legacy)" 'dim'
-        Add-FbLog "    4. it calls https://outlook.office365.com/EWS/Exchange.asmx itself and asks there" 'dim'
-        Add-FbLog "    5. Exchange Online checks its own organisation relationship and the mailbox's calendar" 'dim'
-        Add-FbLog "       permissions, then answers" 'dim'
+        Add-FbLog "  What happens behind this single request (hybrid with the dedicated Exchange hybrid app):" 'dim'
+        Add-FbLog "    1. the on-prem Availability service receives GetUserAvailability for a cloud address" 'dim'
+        Add-FbLog "    2. it finds the tenant via the IntraOrganizationConnector (TargetAddressDomains)." 'dim'
+        Add-FbLog "       The old OrganizationRelationship / DAuth route no longer reaches Exchange Online." 'dim'
+        Add-FbLog "    3. it gets a token for the dedicated hybrid app in Entra ID" 'dim'
+        Add-FbLog "       (the shared service principal is blocked since 31 Oct 2025)" 'dim'
+        Add-FbLog "    4. it asks Exchange Online: via Microsoft Graph (getSchedule) on Exchange SE 15.2.2562.41+" 'dim'
+        Add-FbLog "       with the EnableRouteThroughMSGraphFeature override, otherwise via EWS at" 'dim'
+        Add-FbLog "       outlook.office365.com" 'dim'
+        Add-FbLog "    5. Exchange Online checks the calendar permissions of the mailbox and answers" 'dim'
         Add-FbLog "    6. the on-prem server hands the result back to us" 'dim'
-        Add-FbLog "    Steps 3-5 run server-to-server and leave no trace in this log — only their outcome does." 'dim'
+        Add-FbLog "    Steps 2-5 run server-to-server and leave no trace in this log — only their outcome does." 'dim'
     } else {
         Add-FbLog "  What happens behind this single request:" 'dim'
         Add-FbLog "    1. we authenticate to Exchange Online ourselves (device code, see above)" 'dim'
@@ -3823,11 +3824,11 @@ function Add-FbWhereToLook {
         Add-FbLog "  the lookup reached the other side and came back clean. Candidates, in this order:" 'warn'
         Add-FbLog "    - the mailbox genuinely has nothing in the next 7 days (check with a known-busy mailbox)" 'dim'
         if ($onprem) {
-            Add-FbLog "    - sharing level in Exchange Online: Get-OrganizationRelationship | fl Name,Enabled," 'dim'
-            Add-FbLog "      FreeBusyAccessEnabled,FreeBusyAccessLevel,DomainNames  (AvailabilityOnly returns" 'dim'
-            Add-FbLog "      busy/free only, None returns nothing at all)" 'dim'
             Add-FbLog "    - calendar permission of the EXO mailbox: Get-MailboxFolderPermission <mbx>:\Calendar" 'dim'
             Add-FbLog "      — the Default entry must be at least AvailabilityOnly" 'dim'
+            Add-FbLog "    - EWS route: sharing level in Exchange Online, Get-OrganizationRelationship | fl Name," 'dim'
+            Add-FbLog "      FreeBusyAccessEnabled,FreeBusyAccessLevel (AvailabilityOnly = busy/free only, None =" 'dim'
+            Add-FbLog "      nothing). Whether the Graph route honours this setting is not verified." 'dim'
         } else {
             Add-FbLog "    - sharing level on-premises: Get-OrganizationRelationship and Get-SharingPolicy" 'dim'
             Add-FbLog "    - calendar permission of the on-prem mailbox: Get-MailboxFolderPermission <mbx>:\Calendar" 'dim'
@@ -3848,10 +3849,33 @@ function Add-FbWhereToLook {
         }
         return
     }
+    if ($R.ResponseCode -eq 'NoError') {
+        if ($onprem) {
+            Add-FbLog "  Compare a few appointments with the real calendar: on the Graph route, a known issue" 'dim'
+            Add-FbLog "  (KB 5125804) shifted busy times by the requester's UTC offset without any error;" 'dim'
+            Add-FbLog "  fixed in KB5121608 (September 2026)." 'dim'
+        }
+        return
+    }
     if ($R.ResponseCode -or $R.Fault) {
         $txt = "$($R.ResponseCode) $($R.Message) $($R.Fault)"
         Add-FbLog "  The other side answered with an error. Candidates:" 'fail'
-        if ($txt -match '(?i)proxy|partner|oauth|token|unauthoriz|access denied|RBAC') {
+        if ($onprem -and $txt -notmatch '(?i)not found|no mailbox|recipient') {
+            # On-Prem -> EXO: the on-prem server fetches the token itself. Partner application
+            # and LinkedAccount belong to the opposite direction and do not apply here.
+            Add-FbLog "    - the on-prem server could not query Exchange Online. Check on-prem, in this order:" 'dim'
+            Add-FbLog "      Get-SettingOverride | fl Name,SectionName,Parameters" 'dim'
+            Add-FbLog "        SectionName ExchangeOnpremAsThirdPartyAppId must show Enabled=true. The HCW creates" 'dim'
+            Add-FbLog "        the dedicated hybrid app but does not enable it; after enabling allow up to 60 min." 'dim'
+            Add-FbLog "      Get-AuthServer | fl Name,ApplicationIdentifier" 'dim'
+            Add-FbLog "        the EvoSts entry must carry the app ID of the dedicated hybrid app" 'dim'
+            Add-FbLog "      Test-OAuthConnectivity -Service EWS -TargetUri https://outlook.office365.com -Mailbox <on-prem mbx>" 'dim'
+            Add-FbLog "        expect Success, and Detail.FullId must contain L:<app ID>-AS:" 'dim'
+            Add-FbLog "      EWS log on the mailbox server (Logging\Ews): search for" 'dim'
+            Add-FbLog "        EXNL-GraphWebRequestProcessingException (Graph route) and the target address" 'dim'
+            Add-FbLog "      outbound HTTPS from the Exchange server to login.microsoftonline.com and" 'dim'
+            Add-FbLog "        graph.microsoft.com (proxy, firewall, TLS inspection)" 'dim'
+        } elseif ($txt -match '(?i)proxy|partner|oauth|token|unauthoriz|access denied|RBAC') {
             Add-FbLog "    - hybrid OAuth is the usual cause for this wording. On the on-prem side:" 'dim'
             Add-FbLog "      Get-PartnerApplication | fl Name,Enabled,LinkedAccount   <- an empty LinkedAccount" 'dim'
             Add-FbLog "      breaks exactly this call; Get-AuthServer | fl Name,Enabled,AuthMetadataUrl" 'dim'
@@ -4207,7 +4231,7 @@ $toolTip.SetToolTip($fbTxtExo, "An Exchange Online mailbox SMTP address. Target 
 
 # Add one result row (interpreting a probe result)
 function Add-FbRow {
-    param([string]$Dir, $R, [string]$Ctx)
+    param([string]$Dir, $R, [string]$Ctx, [ValidateSet('A', 'B')][string]$Direction)
     $res = ''; $det = ''
     if ($R.Http -eq 401) {
         $res = 'FAIL'; $det = "HTTP 401 — authentication failed. $Ctx"
@@ -4227,12 +4251,17 @@ function Add-FbRow {
         } else {
             $vt = if ($R.ViewType) { $R.ViewType } else { 'returned' }
             $sum = if ($data) { " — $data (next 7 days)" } else { '' }
-            $res = 'OK'; $det = "Cross-premises free/busy works — view = $vt$sum. Double-click for the appointment list. $Ctx"
+            $chk = if ($Direction -eq 'A') { ' Compare the times with the real calendar.' } else { '' }
+            $res = 'OK'; $det = "Cross-premises free/busy works — view = $vt$sum. Double-click for the appointment list.$chk $Ctx"
         }
     } elseif ($R.ResponseCode) {
         $extra = if ($R.Message) { " — $($R.Message)" } else { '' }
         $hint = ''
-        if ($R.ResponseCode -match 'Proxy' -or "$($R.Message)" -match 'linked account|RBAC|OAuth|partner') {
+        if ($Direction -eq 'A') {
+            if ("$($R.ResponseCode) $($R.Message)" -notmatch '(?i)not found|no mailbox|recipient') {
+                $hint = "  Hint: the on-prem server could not query Exchange Online — check the dedicated hybrid app on-prem (Get-SettingOverride ExchangeOnpremAsThirdPartyAppId, Get-AuthServer, Test-OAuthConnectivity). Details in the Log tab."
+            }
+        } elseif ($R.ResponseCode -match 'Proxy' -or "$($R.Message)" -match 'linked account|RBAC|OAuth|partner') {
             $hint = "  Hint: hybrid OAuth/free-busy authorization issue on the target side — verify the on-prem OAuth config (IntraOrganizationConnector, AuthServer, and especially the partner application's LinkedAccount / RBAC role assignments); run Test-OAuthConnectivity, and recycle the EWS app pool after any change."
         }
         $res = 'FAIL'; $det = "$($R.ResponseCode)$extra.$hint $Ctx"
@@ -4311,7 +4340,7 @@ $fbBtnTest.Add_Click({
             [System.Windows.Forms.Application]::DoEvents()
             $rA = Invoke-FreeBusyProbe -EwsUrl $ewsOnprem -Target $exoMbx -Mode 'win' -User '' -Pass '' -Token '' -IgnoreCert $ign
             Add-FbWhereToLook 'A' $rA
-            Add-FbRow "On-Prem → EXO" $rA "$ewsOnprem  →  $exoMbx  (as logged-in Windows user)"
+            Add-FbRow "On-Prem → EXO" $rA "$ewsOnprem  →  $exoMbx  (as logged-in Windows user)" -Direction A
         } else {
             Add-FbLog "  skipped — no on-prem EWS host." 'warn'
             Add-FbSkip "On-Prem → EXO" "On-prem EWS host not provided."
@@ -4328,7 +4357,7 @@ $fbBtnTest.Add_Click({
             [System.Windows.Forms.Application]::DoEvents()
             $rB = Invoke-FreeBusyProbe -EwsUrl 'https://outlook.office365.com/EWS/Exchange.asmx' -Target $onpMbx -Mode 'bearer' -User '' -Pass '' -Token $tok -IgnoreCert $ign
             Add-FbWhereToLook 'B' $rB
-            Add-FbRow "EXO → On-Prem" $rB "Exchange Online EWS  →  $onpMbx"
+            Add-FbRow "EXO → On-Prem" $rB "Exchange Online EWS  →  $onpMbx" -Direction B
         } else {
             Add-FbLog "  skipped — no access token." 'warn'
             Add-FbSkip "EXO → On-Prem" "Exchange Online sign-in cancelled or failed."

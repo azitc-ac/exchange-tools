@@ -5,6 +5,6 @@
     Description  = 'SMTP-Protokolle auswerten: EHLO/HELO je Gegenstelle, Connector- und Zeitraumfilter'
     SmokeTest    = $true
     Artifacts    = @('ExchangeLogAnalyzer.exe')
-    Bundle       = $false
+    Bundle       = $true
     Notes        = 'Wertet Protokolldateien aus und braucht dafür keine Exchange-Verbindung - läuft auch auf einem Arbeitsplatz.'
 }

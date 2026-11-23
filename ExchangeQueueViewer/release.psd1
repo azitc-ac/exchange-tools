@@ -6,6 +6,6 @@
     RequireAdmin = $true
     SmokeTest    = $true
     Artifacts    = @('ExchangeQueueViewer.exe')
-    Bundle       = $false
+    Bundle       = $true
     Notes        = 'Gehört auf einen Exchange-Server: braucht die Exchange-Verwaltungsshell und erhöhte Rechte.'
 }

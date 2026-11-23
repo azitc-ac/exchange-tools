@@ -6,6 +6,6 @@
     Icon         = 'LogViewer.ico'
     SmokeTest    = $true
     Artifacts    = @('LogViewer.exe')
-    Bundle       = $false
+    Bundle       = $true
     Notes        = 'Eigenständig - weder LogViewer.ps1 noch eine Ausführungsrichtlinie nötig.'
 }

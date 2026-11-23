@@ -218,19 +218,25 @@ Right-click the log for **Copy** (selection or everything), **Select All** and *
 Each direction sends **one** request to **one** endpoint. The interesting part happens after
 that, server-to-server, and leaves no trace here. For **On-Prem → EXO** the chain is:
 
-1. the on-prem Availability service receives `GetUserAvailability` for a foreign address
-2. it looks the target domain up in its address spaces — `IntraOrganizationConnector`, or the
-   older `OrganizationRelationship` / `AvailabilityAddressSpace`
-3. it obtains a token for Exchange Online — OAuth via `AuthServer` + partner application
-   (modern hybrid), or DAuth via the federation trust (legacy)
-4. **it** calls `https://outlook.office365.com/EWS/Exchange.asmx` and asks there
-5. Exchange Online checks its own organisation relationship and the mailbox's calendar
-   permissions, then answers
+1. the on-prem Availability service receives `GetUserAvailability` for a cloud address
+2. it finds the tenant via the `IntraOrganizationConnector` (`TargetAddressDomains`). The old
+   `OrganizationRelationship` / DAuth route no longer reaches Exchange Online.
+3. it gets a token for the **dedicated Exchange hybrid app** in Entra ID. The shared service
+   principal has been blocked since 31 October 2025.
+4. **it** asks Exchange Online: via Microsoft Graph (`getSchedule`) on Exchange SE
+   15.2.2562.41 or later with the `EnableRouteThroughMSGraphFeature` override, otherwise via EWS
+   at `outlook.office365.com`
+5. Exchange Online checks the calendar permissions of the mailbox and answers
 6. the on-prem server hands the result back to us
 
-So a green row for On-Prem → EXO means the whole chain worked, including a hop you never see.
-The log prints these steps before each direction so the single HTTP line underneath is read in
-the right context.
+So a green row for On-Prem → EXO means the whole chain worked, including a hop you never see —
+with the Graph route as well, because this tool only talks to the on-prem EWS. The log prints
+these steps before each direction so the single HTTP line underneath is read in the right
+context. On OK the log also asks you to compare a few appointments with the real calendar: on
+the Graph route a known issue (KB 5125804, fixed in KB5121608) shifted busy times by the
+requester's UTC offset without any error.
+
+Source: [Deploy dedicated Exchange hybrid app](https://learn.microsoft.com/en-us/exchange/hybrid-deployment/deploy-dedicated-hybrid-app) (Microsoft Learn).
 
 ### When the answer comes back empty
 
@@ -239,19 +245,31 @@ most instructive case: connectivity and authentication are proven good — the l
 other side and returned cleanly. The log then names the candidates in order of likelihood:
 
 - the mailbox really has nothing in the next 7 days (retest against a known-busy mailbox)
-- **sharing level** on the answering side — `Get-OrganizationRelationship | fl Name,Enabled,`
-  `FreeBusyAccessEnabled,FreeBusyAccessLevel,DomainNames`; `AvailabilityOnly` returns busy/free
-  without detail, `None` returns nothing at all
 - **calendar permission** of the target mailbox — `Get-MailboxFolderPermission <mbx>:\Calendar`;
   the `Default` entry must be at least `AvailabilityOnly`
-- `Get-IntraOrganizationConnector` — enabled, and the target domain actually listed
+- **sharing level** on the answering side — `Get-OrganizationRelationship | fl Name,Enabled,`
+  `FreeBusyAccessEnabled,FreeBusyAccessLevel,DomainNames`; `AvailabilityOnly` returns busy/free
+  without detail, `None` returns nothing at all. For On-Prem → EXO this is known for the EWS
+  route; whether the Graph route honours it is not verified.
+- EXO → On-Prem only: `Get-IntraOrganizationConnector` — enabled, and the on-prem domain listed
 
-For a hard error the log distinguishes by wording: anything mentioning proxy, partner, OAuth or
-access denied points at hybrid OAuth (and names `Get-PartnerApplication | fl Name,Enabled,`
-`LinkedAccount` — an empty `LinkedAccount` breaks exactly this call, plus
-`Test-OAuthConnectivity` to verify and the app-pool recycle that any change needs). A 401 means
-the request never got past authentication, and no HTTP response at all points at name
-resolution, firewall or TLS.
+For a hard error the hints depend on the direction:
+
+- **On-Prem → EXO**: the on-prem server could not query Exchange Online. The log lists the
+  checks in order: `Get-SettingOverride` (SectionName `ExchangeOnpremAsThirdPartyAppId`,
+  `Enabled=true` — the HCW creates the dedicated hybrid app but does not enable it; allow up to
+  60 minutes after enabling), `Get-AuthServer` (the EvoSts entry carries the app ID),
+  `Test-OAuthConnectivity -Service EWS -TargetUri https://outlook.office365.com` (`Detail.FullId`
+  contains `L:<app ID>-AS:`), the EWS log for `EXNL-GraphWebRequestProcessingException`, and
+  outbound HTTPS to `login.microsoftonline.com` and `graph.microsoft.com`. Partner application
+  and `LinkedAccount` do not apply to this direction.
+- **EXO → On-Prem**: wording with proxy, partner, OAuth or access denied points at hybrid OAuth
+  on-prem (`Get-PartnerApplication | fl Name,Enabled,LinkedAccount` — an empty `LinkedAccount`
+  breaks exactly this call, plus `Test-OAuthConnectivity` to verify and the app-pool recycle that
+  any change needs).
+
+A 401 means the request never got past authentication, and no HTTP response at all points at
+name resolution, firewall or TLS.
 
 Hover a row for the raw response; **double-click** to view it in full (and copy it to the clipboard). The On-Prem → EXO direction runs as your logged-in Windows user.
 

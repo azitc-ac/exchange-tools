@@ -6,6 +6,6 @@
     SmokeTest    = $false
     SmokeSkipGrund = 'oeffnet beim Start die Anmeldung an Exchange Online'
     Artifacts    = @('MailContactEditor.exe')
-    Bundle       = $false
+    Bundle       = $true
     Notes        = 'Benötigt das Modul ExchangeOnlineManagement ab 3.6.0 auf dem Zielrechner.'
 }

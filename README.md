@@ -69,8 +69,11 @@ steht in seiner `release.psd1`.
 
 ## Releases
 
-Wer nicht bauen will, findet fertige EXE-Dateien unter [Releases](../../releases). Ein Release
-je Werkzeug, ausgelöst durch einen Tag der Form `<Werkzeug>/v<Version>`.
+Wer nicht bauen will, findet alles unter [Releases](../../releases). Ein Release je Werkzeug,
+ausgelöst durch einen Tag der Form `<Werkzeug>/v<Version>`. Jedes Release enthält
+`<Werkzeug>-<Version>.zip` mit genau diesem Werkzeug, bei EXE-Werkzeugen zusätzlich die EXE.
+Die Archive „Source code (zip/tar.gz)“ hängt GitHub selbst an jedes Release; sie enthalten das
+ganze Sammelrepo.
 
 **Neue Versionsnummer = neues Release.** Nach jeder grünen CI auf `main` sucht
 `.github/workflows/auto-release.yml` mit `build/Get-ReleaseDrift.ps1` nach Werkzeugen, deren
@@ -95,7 +98,9 @@ bekommt von GitHub für die überzähligen *keine* Push-Events – die Releases 
 dann stillschweigend aus. Nachholen lässt sich das über *Actions → Release → Run
 workflow* mit dem Tag als Eingabe, oder per `gh workflow run Release -f tag=<Tag>`.
 
-`.github/workflows/release.yml` baut daraufhin die EXE mit ps2exe und hängt sie an. Welche
+`.github/workflows/release.yml` baut daraufhin die EXE mit ps2exe, packt den Werkzeugordner mit
+`build/New-ReleaseBundle.ps1` als ZIP (ohne `release.psd1` und ohne die einzeln angehängten
+Artefakte) und hängt beides an. Welche
 Dateien ins Release gehören, steht in der `release.psd1` des Werkzeugs; ein Werkzeug ohne
 diese Datei bekommt kein Release. Die Versionsnummer steht an genau einer Stelle – als
 `$script:Version` im Hauptskript – und der Workflow bricht ab, wenn der Tag etwas anderes
@@ -113,8 +118,10 @@ Hinter einem Einstiegspunkt: **Syntax** (jede `.ps1` wird geparst), **Encoding**
 eingebetteten Prüfblöcke stimmen mit ihrer Quelle überein, die Mindestversion wird
 erzwungen), **README** (keine README nennt eine `.ps1`, die es nicht gibt – und wer das
 Bauen beschreibt, sagt auch, woher die EXE sonst kommt), **Release-Logik** (die Schritte
-aus `release.yml`, inklusive echtem EXE-Bau) und **EXE-Start** (jede gebaute EXE wird
-gestartet und muss ein Fenster zeigen – ein grüner Build beweist das nicht).
+aus `release.yml`, inklusive echtem EXE-Bau), **Release-ZIP** (jedes Werkzeug hat ein eigenes
+ZIP, die EXE liegt nicht doppelt darin, die Release-Notizen nennen das ZIP) und **EXE-Start**
+(jede gebaute EXE wird gestartet und muss ein Fenster zeigen – ein grüner Build beweist das
+nicht).
 
 Dazu laufen die Tests der einzelnen Werkzeuge mit: Was unter
 `<Werkzeug>\tests\Test-*.ps1` liegt, wird von selbst gefunden und ausgeführt.
@@ -124,7 +131,7 @@ Skript auf – „lokal grün" und „CI grün" bedeuten damit dasselbe.
 
 Die EXE-Dateien sind **nicht signiert**: Windows SmartScreen meldet sich beim ersten Start,
 und manche Virenscanner stufen mit ps2exe erzeugte Dateien als verdächtig ein. Wer das
-vermeiden will, nimmt das PowerShell-Skript aus dem Quellordner statt der EXE.
+vermeiden will, startet das PowerShell-Skript aus `<Werkzeug>-<Version>.zip` statt der EXE.
 
 ## Herkunft
 

@@ -10,6 +10,6 @@
     # den Dialog als unerwartet.
     SmokeAllowDialog = $true
     Artifacts    = @('ImportExchangePfx.exe')
-    Bundle       = $false
+    Bundle       = $true
     Notes        = 'Gehört auf einen Exchange-Server: braucht die Exchange-Verwaltungsshell und erhöhte Rechte.'
 }

@@ -40,6 +40,7 @@ $pruefungen = @(
     @{ Name = 'Zertifikat';    Skript = 'build\Test-CertBypass.ps1';   Build = $false }
     @{ Name = 'Release-Logik'; Skript = 'build\Test-ReleaseLogic.ps1'; Build = $true  }
     @{ Name = 'Release-Drift'; Skript = 'build\Test-ReleaseDrift.ps1'; Build = $false }
+    @{ Name = 'Release-ZIP';   Skript = 'build\Test-ReleaseBundle.ps1'; Build = $false }
     # Startet die gebauten EXE-Dateien wirklich. Überspringt sich in der CI selbst,
     # weil ein Runner keine brauchbare Desktop-Sitzung hat.
     @{ Name = 'EXE-Start';     Skript = 'build\Test-ExeSmoke.ps1';     Build = $true  }
