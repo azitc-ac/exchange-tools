@@ -87,7 +87,7 @@ param(
 )
 
 # Einzige Stelle fuer die Versionsnummer; Build und Release-Tag lesen sie hier aus.
-$script:Version = '1.2.2'
+$script:Version = '1.2.3'
 
 #region ------------------------------------------------------------ Fortschritt
 
@@ -298,6 +298,45 @@ function Resolve-Ptr {
     } catch { }
     $script:PtrCache[$Ip] = $name
     return $name
+}
+
+function Resolve-PtrBatch {
+    <#
+        Rückwärtsnamen parallel (Runspaces, auch unter 5.1). Nacheinander wartet jede Adresse ohne PTR
+        ihren Timeout ab - gemessen 24 s für 19 Quellen. Ergebnis landet in $script:PtrCache wie bei
+        Resolve-Ptr. -Resolver nur für Tests: Skriptblock mit param($ip), gibt den Namen oder '' zurück.
+    #>
+    param([string[]]$Ips, [int]$Threads = 16, [scriptblock]$Resolver)
+    if (-not $script:PtrCache) { $script:PtrCache = @{} }
+    $todo = @($Ips | Where-Object { $_ -and -not $script:PtrCache.ContainsKey($_) } | Sort-Object -Unique)
+    if (-not $todo) { return }
+    if (-not $Resolver) {
+        $Resolver = { param($ip)
+            try {
+                $r = Resolve-DnsName -Name $ip -Type PTR -QuickTimeout -ErrorAction Stop | Where-Object { $_.Type -eq 'PTR' } | Select-Object -First 1
+                if ($r) { "$($r.NameHost)".TrimEnd('.').ToLower() } else { '' }
+            } catch { '' } }
+    }
+    $pool = [runspacefactory]::CreateRunspacePool(1, [math]::Max(1, [math]::Min($Threads, $todo.Count)))
+    $pool.Open()
+    $jobs = @(); $i = 0
+    try {
+        foreach ($ip in $todo) {
+            $ps = [powershell]::Create().AddScript($Resolver.ToString()).AddArgument($ip)
+            $ps.RunspacePool = $pool
+            $jobs += [pscustomobject]@{ Ip = $ip; Ps = $ps; H = $ps.BeginInvoke() }
+        }
+        foreach ($j in $jobs) {
+            $out = @(try { $j.Ps.EndInvoke($j.H) } catch { })
+            $script:PtrCache[$j.Ip] = if ($out.Count) { "$($out[0])" } else { '' }
+            $i++
+            Show-Progress -Activity 'Rückwärtsnamen (PTR)' -Status ("IP {0} von {1}" -f $i, $todo.Count) -Current $i -Total $todo.Count
+        }
+    } finally {
+        foreach ($j in $jobs) { $j.Ps.Dispose() }
+        $pool.Close(); $pool.Dispose()
+        Show-Progress -Activity 'Rückwärtsnamen (PTR)' -Completed
+    }
 }
 
 function Test-DomainRelated {
@@ -639,7 +678,7 @@ function New-DmarcHtmlReport {
 <title>$(& $e $Title)</title><style>
 :root{--bg:#fff;--fg:#1f2328;--mut:#59636e;--line:#d1d9e0;--ok:#1a7f37;--bad:#cf222e;--warn:#9a6700;--card:#f6f8fa;--hl:#fff8c5}
 @media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#9198a1;--line:#3d444d;--ok:#3fb950;--bad:#f85149;--warn:#d29922;--card:#151b23;--hl:#2e2a14}}
-tr.hl td{background:var(--hl)}tr.det td{border-bottom:1px solid var(--line);padding-top:0}tr.det details{margin:2px 0}tr:target td{outline:2px solid var(--warn)}a{color:inherit}
+tr.hl td{background:var(--hl)}tr.det td{border-bottom:1px solid var(--line);padding-top:0}tr.det details{margin:2px 0;box-sizing:border-box;max-width:min(100%,calc(100vw - 56px));position:sticky;left:0}tr.det li,tr.det p{white-space:normal;overflow-wrap:anywhere}tr:target td{outline:2px solid var(--warn)}a{color:inherit}
 details{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 14px;margin:14px 0}summary{cursor:pointer;font-weight:600}
 details li{margin:3px 0}.small{font-size:12px}
 body{background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,Segoe UI,sans-serif;margin:0;padding:16px;max-width:1200px;margin:auto}
@@ -650,7 +689,7 @@ th{font-weight:600;color:var(--mut)}td.n{text-align:right;font-variant-numeric:t
 .cards{display:flex;flex-wrap:wrap;gap:10px}.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 14px;min-width:150px}
 .card b{display:block;font-size:20px}.tag{font-size:12px;padding:1px 6px;border-radius:10px;border:1px solid var(--line)}
 svg text{fill:var(--mut);font-size:10px}
-td.dkim{overflow-wrap:anywhere;min-width:12em}td.auff{min-width:11em}
+td.dkim{overflow-wrap:anywhere;min-width:10em}td.auff{min-width:9em}
 @media (max-width:700px){body{padding:10px}th,td{padding:4px 5px}}
 </style></head><body>
 <h1>$(& $e $Title)</h1><div class="mut">Quelle: $(& $e $Origin) · erstellt $(Get-Date -Format 'dd.MM.yyyy HH:mm') · DmarcReportAnalyzer $script:Version</div>
@@ -733,7 +772,7 @@ td.dkim{overflow-wrap:anywhere;min-width:12em}td.auff{min-width:11em}
         [void]$sb.Append("<div class='mut small'>Höhe: Mails je Tag nach Beginn des Report-Zeitraums; die gestrichelte Linie ist der höchste Tag ($max Mails).</div>")
     }
 
-    [void]$sb.Append('<h2>Quellen</h2><div class="wrap"><table><tr><th>Domain</th><th>Quelle</th><th>Dienst</th><th>Auffällig</th><th>Zeitraum</th><th class="n">Mails</th><th class="n">DMARC-Pass</th><th class="n">DKIM aligned</th><th class="n">SPF aligned</th><th class="n">Quarantäne/Reject</th><th>DKIM-Ergebnis</th><th>Berichtet von</th></tr>')
+    [void]$sb.Append('<h2>Quellen</h2><div class="wrap"><table><tr><th>Domain</th><th>Quelle</th><th>Dienst</th><th>Auffällig</th><th>Zeitraum</th><th class="n">Mails</th><th class="n">DMARC-Pass</th><th class="n">DKIM aligned</th><th class="n">SPF aligned</th><th class="n">Quarantäne/<wbr>Reject</th><th>DKIM-Ergebnis</th><th>Berichtet von</th></tr>')
     foreach ($s in $Sources) {
         $pct = if ($s.Count) { [math]::Round(100.0 * $s.DmarcPass / $s.Count) } else { 0 }
         $cls = if ($pct -ge 98) { 'ok' } elseif ($pct -ge 50) { 'warn' } else { 'bad' }
@@ -759,8 +798,9 @@ td.dkim{overflow-wrap:anywhere;min-width:12em}td.auff{min-width:11em}
                 $teile = @($r.Begin.ToString('dd.MM.yyyy'), $r.Reporter, "$($r.Count) Mails", (Get-FindingLabel (Get-DmarcRowFinding $r)))
                 $teile += $(if ($r.EnvelopeTo) { "an $($r.EnvelopeTo)" } else { 'Empfängerdomain nicht gemeldet' })
                 $teile += "SPF $($r.SpfAuth)"
-                $teile += $(if ($r.DkimAuth) { "DKIM $($r.DkimAuth)" } else { 'DKIM: keine Signatur' })
-                if ($r.DkimSelector) { $teile += "Selektor $($r.DkimSelector)" }
+                # Mehrere Signaturen wie in der Tabelle mit "+" (in der CSV bleibt "; ").
+                $teile += $(if ($r.DkimAuth) { "DKIM $(($r.DkimAuth -split '\s*;\s*') -join ' + ')" } else { 'DKIM: keine Signatur' })
+                if ($r.DkimSelector) { $teile += "Selektor $(($r.DkimSelector -split '\s*;\s*') -join ' + ')" }
                 if ($r.EnvelopeFrom) { $teile += "Return-Path $($r.EnvelopeFrom)" }
                 if ($r.Disposition -and $r.Disposition -ne 'none') { $teile += $r.Disposition }
                 if ($r.Reason) { $teile += "Grund $($r.Reason)" }
@@ -962,15 +1002,28 @@ function Get-GroupReportAttachments {
     Write-Host 'Lese Unterhaltungen und Anhänge ... (bei vielen Reports einige Minuten)' -ForegroundColor Gray
     $akt = 'Gruppenpostfach lesen'
     Show-Progress -Activity $akt -Status 'Unterhaltungen auflisten' -Force
-    # Erst beim Server nach Datum filtern (große Gruppen haben Hunderte alter Unterhaltungen). Lehnt
-    # Graph den Filter ab oder liefert er nichts, alle holen - die Prüfung hier unten gilt in beiden Fällen.
+    # Erst beim Server nach Datum filtern: große Gruppen haben Hunderte alter Unterhaltungen (gemessen
+    # 741 Threads, 55 s nur fürs Auflisten). /threads nahm $filter nicht an (Lauf 24.11.2026);
+    # /conversations unterstützt laut Learn $select und $filter. Abgelehnt oder leer -> wie bisher
+    # alle Threads holen. Die Datumsprüfung hier unten gilt in beiden Fällen.
     $base = "https://graph.microsoft.com/v1.0/groups/$gid/threads?`$select=id,topic,lastDeliveredDateTime,hasAttachments&`$top=50"
-    $all = @(); $serverFilter = $false
+    $sinceIso = $Since.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    $all = @(); $serverFilter = $false; $sw = [Diagnostics.Stopwatch]::StartNew()
     try {
-        $all = @(Get-GraphPages -Uri ($base + "&`$filter=lastDeliveredDateTime ge $($Since.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))") -Token $Token)
-        $serverFilter = $all.Count -gt 0
-    } catch { Write-Verbose "Datumsfilter beim Server abgelehnt: $($_.Exception.Message)" }
-    if (-not $serverFilter) { $all = @(Get-GraphPages -Uri $base -Token $Token) }
+        $conv = @(Get-GraphPages -Uri "https://graph.microsoft.com/v1.0/groups/$gid/conversations?`$filter=lastDeliveredDateTime ge $sinceIso&`$select=id,lastDeliveredDateTime" -Token $Token)
+        Write-Verbose ("Datumsfilter auf conversations: {0} Treffer seit {1} ({2:N1} s)" -f $conv.Count, $sinceIso, $sw.Elapsed.TotalSeconds)
+        if ($conv.Count) {
+            $all = @(foreach ($c in $conv) { Get-GraphPages -Uri "https://graph.microsoft.com/v1.0/groups/$gid/conversations/$($c.id)/threads?`$select=id,topic,lastDeliveredDateTime,hasAttachments" -Token $Token })
+            $serverFilter = $true
+        }
+    } catch {
+        # Unter 5.1 steht die Antwort von Graph (Fehlercode, Text) in ErrorDetails, nicht in der Exception.
+        Write-Verbose ("Datumsfilter auf conversations abgelehnt: {0} {1}" -f $_.Exception.Message, $_.ErrorDetails.Message)
+    }
+    if (-not $serverFilter) {
+        $sw.Restart(); $all = @(Get-GraphPages -Uri $base -Token $Token)
+        Write-Verbose ("Alle Threads gelistet: {0} ({1:N1} s)" -f $all.Count, $sw.Elapsed.TotalSeconds)
+    }
     $inRange = @($all | Where-Object { -not $_.lastDeliveredDateTime -or ([datetime]$_.lastDeliveredDateTime) -ge $Since })
     $n = @{ Posts = 0; PostsMitAnhang = 0; Anhaenge = 0 }
     $i = 0
@@ -1065,13 +1118,7 @@ if ($rows.Count -eq 0) { Write-Warning "Keine DMARC-Daten in den letzten $Days T
 if (-not $NoReverseDns) {
     $ips = @($rows.SourceIp | Sort-Object -Unique)
     Write-Host "Reverse-DNS für $($ips.Count) Quellen ... (abschalten mit -NoReverseDns)" -ForegroundColor Gray
-    $i = 0
-    foreach ($ip in $ips) {
-        $i++
-        Show-Progress -Activity 'Rückwärtsnamen (PTR)' -Status ("IP {0} von {1}" -f $i, $ips.Count) -Current $i -Total $ips.Count
-        [void](Resolve-Ptr $ip)
-    }
-    Show-Progress -Activity 'Rückwärtsnamen (PTR)' -Completed
+    Resolve-PtrBatch -Ips $ips
     Write-Host "Reverse-DNS fertig $(Get-PhaseTime)" -ForegroundColor Gray
     foreach ($r in $rows) { $r.Ptr = $script:PtrCache[$r.SourceIp]; $r.Service = Get-SenderService $r.Ptr }
 }

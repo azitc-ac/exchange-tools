@@ -15,7 +15,7 @@ foreach ($fn in 'ConvertFrom-DmarcAttachment', 'ConvertFrom-DmarcXml', 'Get-Dmar
                 'Get-GraphPages', 'Get-GraphAccessToken', 'ConvertTo-Base64Url', 'New-PkceVerifier',
                 'Get-PkceChallenge', 'ConvertFrom-AuthRedirect', 'Get-GraphTokenBrowser',
                 'Test-IpInCidr', 'Test-Microsoft365Ip', 'Get-ReporterTargets', 'Select-TraceCandidates',
-                'Get-TraceCandidates', 'Show-Progress', 'Get-MailboxReportAttachments', 'Get-GroupReportAttachments') {
+                'Get-TraceCandidates', 'Show-Progress', 'Get-MailboxReportAttachments', 'Get-GroupReportAttachments', 'Resolve-PtrBatch') {
     $def = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq $fn }, $false)
     if (-not $def) { throw "Funktion nicht gefunden: $fn" }
     Invoke-Expression $def[0].Extent.Text
@@ -219,6 +219,9 @@ T 'Verlauf: Beschriftung jeder 2. Tag' (([regex]::Matches($vh, "text-anchor='mid
 T 'Verlauf: Maximum an der Achse, nicht in der Legende' (($vh -match "text-anchor='end'>5<") -and ($vh -notmatch 'Fail · Maximum')) $true
 T 'DKIM: Kombinationen je Zeile' ($vh -match "class='small dkim'>contoso\.com=pass<br>contoso\.com=pass \+ contoso\.com=fail<") $true
 T 'Auffällig vor Zeitraum'       ($vh -match '<th>Auffällig</th><th>Zeitraum</th>') $true
+T 'Einzelheiten: Signaturen mit + wie in der Tabelle' (($vh -match '<li>[^<]*DKIM contoso\.com=pass \+ contoso\.com=fail') -and ($vh -notmatch '<li>[^<]*=pass; ')) $true
+T 'Einzelheiten brechen um, statt die Tabelle zu verbreitern' ($vh -match 'tr\.det li,tr\.det p\{white-space:normal;overflow-wrap:anywhere\}') $true
+T 'Einzelheiten-Kasten an sichtbare Breite gebunden' ($vh -match 'tr\.det details\{[^}]*max-width:min\(100%,calc\(100vw - 56px\)\);position:sticky;left:0\}') $true
 
 Write-Output "`n######## Einzelheiten: wohin, Grund, Selektor ########"
 function RecVoll($ip, $count, $dkim, $spf, $to = '', $reason = '', $sel = 'selector1', $auth = $true) {
@@ -406,25 +409,41 @@ Write-Output "`n######## Fortschrittsanzeige ########"
     T 'Gruppe: Anhänge trotz Fortschritt'     $gr.Count 2
     T 'Gruppe: Fortschritt beginnt und endet' ((@($script:prog | Where-Object A -eq 'Gruppenpostfach lesen').Count -ge 2) -and $script:prog[-1].C) $true
 
-    # Datumsfilter beim Server: genutzt, wenn Graph ihn annimmt; sonst (Fehler oder leer) alles holen.
+    # Datumsfilter beim Server über /conversations (Learn: $filter unterstützt); abgelehnt oder leer -> alle Threads.
     $script:uris = New-Object Collections.ArrayList
+    $voll = '/groups/[^/]+/threads\?'
     function Get-GraphPages { param($Uri, $Token) [void]$script:uris.Add($Uri)
-        if ($Uri -match '/threads\?') { @{ id = 't1' }, @{ id = 't2' } } else { @{ id = 'p1'; hasAttachments = $true } } }
-    [void](Get-GroupReportAttachments -Group 'dmarc@contoso.com' -Token 't' -Since (Get-Date).AddDays(-1))
-    T 'Gruppe: Filter beim Server genutzt' (@($script:uris | Where-Object { $_ -match '/threads\?' }) -join '|') ($script:uris | Where-Object { $_ -match '/threads\?.*filter=lastDeliveredDateTime ge \d{4}-\d\d-\d\dT' })
+        if ($Uri -match '/conversations\?') { @{ id = 'c1' } }
+        elseif ($Uri -match '/threads\?') { @{ id = 't1' }, @{ id = 't2' } } else { @{ id = 'p1'; hasAttachments = $true } } }
+    $gr = @(Get-GroupReportAttachments -Group 'dmarc@contoso.com' -Token 't' -Since (Get-Date).AddDays(-1))
+    $cu = @($script:uris | Where-Object { $_ -match '/conversations\?' })
+    T 'Gruppe: Filter auf conversations' ($cu.Count -eq 1 -and $cu[0] -match 'filter=lastDeliveredDateTime ge \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ') $true
+    T 'Gruppe: Threads je Unterhaltung, keine Gesamtliste' "$($gr.Count) $(@($script:uris | Where-Object { $_ -match '/conversations/c1/threads\?' }).Count) $(@($script:uris | Where-Object { $_ -match $voll }).Count)" '2 1 0'
     $script:uris.Clear()
     function Get-GraphPages { param($Uri, $Token) [void]$script:uris.Add($Uri)
         if ($Uri -match 'filter=') { throw 'Invalid filter clause' }
         if ($Uri -match '/threads\?') { @{ id = 't1' }, @{ id = 't2' } } else { @{ id = 'p1'; hasAttachments = $true } } }
     $gr = @(Get-GroupReportAttachments -Group 'dmarc@contoso.com' -Token 't' -Since (Get-Date).AddDays(-1))
-    T 'Gruppe: Filter abgelehnt -> alle holen' "$($gr.Count) $(@($script:uris | Where-Object { $_ -match '/threads\?' -and $_ -notmatch 'filter=' }).Count)" '2 1'
+    T 'Gruppe: Filter abgelehnt -> alle holen' "$($gr.Count) $(@($script:uris | Where-Object { $_ -match $voll }).Count)" '2 1'
     $script:uris.Clear()
     function Get-GraphPages { param($Uri, $Token) [void]$script:uris.Add($Uri)
         if ($Uri -match 'filter=') { return }
         if ($Uri -match '/threads\?') { @{ id = 't1' }, @{ id = 't2' } } else { @{ id = 'p1'; hasAttachments = $true } } }
     $gr = @(Get-GroupReportAttachments -Group 'dmarc@contoso.com' -Token 't' -Since (Get-Date).AddDays(-1))
-    T 'Gruppe: Filter leer -> zur Sicherheit alle holen' $gr.Count 2
+    T 'Gruppe: Filter leer -> zur Sicherheit alle holen' "$($gr.Count) $(@($script:uris | Where-Object { $_ -match $voll }).Count)" '2 1'
 }
+
+Write-Output "`n######## Rückwärtsnamen parallel ########"
+$script:PtrCache = @{ '192.0.2.1' = 'schon.da.example' }
+$ips = @('192.0.2.1') + @(2..9 | ForEach-Object { "192.0.2.$_" })
+$sw = [Diagnostics.Stopwatch]::StartNew()
+Resolve-PtrBatch -Ips $ips -Resolver { param($ip) Start-Sleep -Milliseconds 800; if ($ip -eq '192.0.2.9') { throw 'kaputt' }; "h-$ip.example" }
+$dauer = $sw.Elapsed.TotalSeconds
+T 'PTR: jede IP im Cache'          (@($ips | Where-Object { $script:PtrCache.ContainsKey($_) }).Count) 9
+T 'PTR: Ergebnis zur richtigen IP' $script:PtrCache['192.0.2.5'] 'h-192.0.2.5.example'
+T 'PTR: Cache wird nicht neu gefragt' $script:PtrCache['192.0.2.1'] 'schon.da.example'
+T 'PTR: Fehler ergibt leeren Namen' $script:PtrCache['192.0.2.9'] ''
+T 'PTR: parallel (8 x 0,8 s in unter 3 s)' ($dauer -lt 3) $true
 
 Write-Output "`n######## Ganzer Lauf gegen einen Ordner ########"
 $tmp = Join-Path $env:TEMP ('dmarc-' + [guid]::NewGuid().ToString('N'))
