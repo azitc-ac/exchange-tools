@@ -87,7 +87,29 @@ param(
 )
 
 # Einzige Stelle fuer die Versionsnummer; Build und Release-Tag lesen sie hier aus.
-$script:Version = '1.2.0'
+$script:Version = '1.2.1'
+
+#region ------------------------------------------------------------ Fortschritt
+
+$script:ProgressTimer = [Diagnostics.Stopwatch]::StartNew()
+function Show-Progress {
+    <#
+        Fortschritt für lange Phasen, höchstens alle 300 ms (Write-Progress ist unter 5.1 teuer).
+        -Force zeigt sofort (Phasenbeginn). Ohne Konsole oder mit $ProgressPreference =
+        'SilentlyContinue' passiert nichts; ein Host, der Write-Progress ablehnt, bricht den Lauf nicht ab.
+    #>
+    param([string]$Activity, [string]$Status, [int]$Current = 0, [int]$Total = 0, [switch]$Completed, [switch]$Force)
+    try {
+        if ($Completed) { Write-Progress -Activity $Activity -Completed; return }
+        if (-not $Force -and $script:ProgressTimer.ElapsedMilliseconds -lt 300) { return }
+        $script:ProgressTimer.Restart()
+        $p = @{ Activity = $Activity; Status = $(if ($Status) { $Status } else { '...' }) }
+        if ($Total -gt 0) { $p.PercentComplete = [math]::Min(100, [int](100 * $Current / $Total)) }
+        Write-Progress @p
+    } catch { }
+}
+
+#endregion
 
 #region ------------------------------------------------------------ Einlesen
 
@@ -541,8 +563,10 @@ function Get-TraceCandidates {
         einmal). Ergebnis: Hashtable Quellen-Id -> @{ Anzahl; Passend; Eingrenzbar; Mails }.
     #>
     param([object[]]$Sources, [object[]]$Rows, [int]$MaxAbfragen = 40)
-    $ergebnis = @{}; $cache = @{}; $abfragen = 0
+    $ergebnis = @{}; $cache = @{}; $abfragen = 0; $i = 0
     foreach ($s in $Sources) {
+        $i++
+        Show-Progress -Activity 'Message Trace' -Status ("Quelle {0} von {1}, Abfragen {2}" -f $i, @($Sources).Count, $abfragen) -Current $i -Total @($Sources).Count
         if ("$($s.Service)" -like 'Weiterleitung*' -or -not $s.Findings) { continue }
         $tage = @(); foreach ($k in 'Fail', 'DkimGebrochen', 'NurSpf') { if ($s.Findings[$k]) { $tage += @($s.FindingDays[$k]) } }
         $tage = @($tage | Where-Object { $_ } | Sort-Object -Unique)
@@ -574,6 +598,7 @@ function Get-TraceCandidates {
         $ergebnis[$s.Id] = [pscustomobject]@{ Anzahl = $trace.Count; Passend = @($kand | Where-Object Passt).Count
                                                Eingrenzbar = ($ziele.Count -gt 0 -and -not $offen); Mails = $kand }
     }
+    Show-Progress -Activity 'Message Trace' -Completed
     return $ergebnis
 }
 
@@ -906,11 +931,17 @@ function Get-GroupReportAttachments {
     if (-not $g.value) { throw "Keine Microsoft-365-Gruppe mit der Adresse '$Group' gefunden (oder kein Zugriff)." }
     $gid = $g.value[0].id
     Write-Host "Gruppe: $($g.value[0].displayName)" -ForegroundColor Gray
+    Write-Host 'Lese Unterhaltungen und Anhänge ... (bei vielen Reports einige Minuten)' -ForegroundColor Gray
+    $akt = 'Gruppenpostfach lesen'
+    Show-Progress -Activity $akt -Status 'Unterhaltungen auflisten' -Force
     # Alle Unterhaltungen holen und hier filtern, damit die Zählung zeigt, was wo wegfällt.
     $all = @(Get-GraphPages -Uri "https://graph.microsoft.com/v1.0/groups/$gid/threads?`$select=id,topic,lastDeliveredDateTime,hasAttachments&`$top=50" -Token $Token)
     $inRange = @($all | Where-Object { -not $_.lastDeliveredDateTime -or ([datetime]$_.lastDeliveredDateTime) -ge $Since })
     $n = @{ Posts = 0; PostsMitAnhang = 0; Anhaenge = 0 }
+    $i = 0
     foreach ($t in $inRange) {
+        $i++
+        Show-Progress -Activity $akt -Status ("Unterhaltung {0} von {1}, Anhänge bisher {2}" -f $i, $inRange.Count, $n.Anhaenge) -Current $i -Total $inRange.Count
         # hasAttachments der Unterhaltung nicht als Filter nehmen - nur zählen, die Beiträge entscheiden.
         foreach ($p in (Get-GraphPages -Uri "https://graph.microsoft.com/v1.0/groups/$gid/threads/$($t.id)/posts?`$select=id,receivedDateTime,hasAttachments" -Token $Token)) {
             $n.Posts++
@@ -921,6 +952,7 @@ function Get-GroupReportAttachments {
             }
         }
     }
+    Show-Progress -Activity $akt -Completed
     Write-Host ("Unterhaltungen: {0} gesamt, {1} seit {2:dd.MM.yyyy}; Beiträge: {3}, davon mit Anhang {4}; Anhänge: {5}" -f `
         $all.Count, $inRange.Count, $Since, $n.Posts, $n.PostsMitAnhang, $n.Anhaenge) -ForegroundColor Gray
 }
@@ -930,11 +962,19 @@ function Get-MailboxReportAttachments {
     param([string]$Mailbox, [string]$Token, [datetime]$Since)
     $since = $Since.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     $uri = "https://graph.microsoft.com/v1.0/users/$([uri]::EscapeDataString($Mailbox))/messages?`$filter=receivedDateTime ge $since and hasAttachments eq true&`$select=id,receivedDateTime&`$top=50"
-    foreach ($m in (Get-GraphPages -Uri $uri -Token $Token)) {
+    Write-Host 'Lese Nachrichten mit Anhang ... (bei vielen Reports einige Minuten)' -ForegroundColor Gray
+    $akt = 'Postfach lesen'
+    Show-Progress -Activity $akt -Status 'Nachrichten auflisten' -Force
+    $msgs = @(Get-GraphPages -Uri $uri -Token $Token)
+    $i = 0
+    foreach ($m in $msgs) {
+        $i++
+        Show-Progress -Activity $akt -Status ("Nachricht {0} von {1}" -f $i, $msgs.Count) -Current $i -Total $msgs.Count
         foreach ($a in (Invoke-Graph -Uri "https://graph.microsoft.com/v1.0/users/$([uri]::EscapeDataString($Mailbox))/messages/$($m.id)/attachments" -Token $Token).value) {
             if ($a.contentBytes) { [pscustomobject]@{ Name = $a.name; Bytes = [Convert]::FromBase64String($a.contentBytes) } }
         }
     }
+    Show-Progress -Activity $akt -Completed
 }
 
 #endregion
@@ -969,11 +1009,14 @@ switch ($PSCmdlet.ParameterSetName) {
 }
 Write-Host "Anhänge/Dateien gelesen: $($files.Count)" -ForegroundColor Gray
 
-$reports = @(); $broken = 0
+$reports = @(); $broken = 0; $i = 0
 foreach ($f in $files) {
+    $i++
+    Show-Progress -Activity 'Reports entpacken und lesen' -Status ("Datei {0} von {1}" -f $i, $files.Count) -Current $i -Total $files.Count
     try { foreach ($x in (ConvertFrom-DmarcAttachment -Bytes $f.Bytes -Name $f.Name)) { $reports += ConvertFrom-DmarcXml -Xml $x } }
     catch { $broken++; Write-Warning "Nicht lesbar: $($f.Name) - $($_.Exception.Message)" }
 }
+Show-Progress -Activity 'Reports entpacken und lesen' -Completed
 $reports = @($reports | Where-Object { $_.End -and $_.End -ge $since })
 $rows = @(Get-DmarcRows -Reports $reports)
 Write-Host ("Reports im Zeitraum: {0}, Datensätze: {1}, nicht lesbar: {2}" -f $reports.Count, $rows.Count, $broken) -ForegroundColor Gray
@@ -981,8 +1024,14 @@ if ($rows.Count -eq 0) { Write-Warning "Keine DMARC-Daten in den letzten $Days T
 
 if (-not $NoReverseDns) {
     $ips = @($rows.SourceIp | Sort-Object -Unique)
-    Write-Host "Reverse-DNS für $($ips.Count) Quellen ..." -ForegroundColor Gray
-    foreach ($ip in $ips) { [void](Resolve-Ptr $ip) }
+    Write-Host "Reverse-DNS für $($ips.Count) Quellen ... (abschalten mit -NoReverseDns)" -ForegroundColor Gray
+    $i = 0
+    foreach ($ip in $ips) {
+        $i++
+        Show-Progress -Activity 'Rückwärtsnamen (PTR)' -Status ("IP {0} von {1}" -f $i, $ips.Count) -Current $i -Total $ips.Count
+        [void](Resolve-Ptr $ip)
+    }
+    Show-Progress -Activity 'Rückwärtsnamen (PTR)' -Completed
     foreach ($r in $rows) { $r.Ptr = $script:PtrCache[$r.SourceIp]; $r.Service = Get-SenderService $r.Ptr }
 }
 if (-not $NoMicrosoftRanges) {

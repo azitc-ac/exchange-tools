@@ -15,12 +15,13 @@ foreach ($fn in 'ConvertFrom-DmarcAttachment', 'ConvertFrom-DmarcXml', 'Get-Dmar
                 'Get-GraphPages', 'Get-GraphAccessToken', 'ConvertTo-Base64Url', 'New-PkceVerifier',
                 'Get-PkceChallenge', 'ConvertFrom-AuthRedirect', 'Get-GraphTokenBrowser',
                 'Test-IpInCidr', 'Test-Microsoft365Ip', 'Get-ReporterTargets', 'Select-TraceCandidates',
-                'Get-TraceCandidates') {
+                'Get-TraceCandidates', 'Show-Progress', 'Get-MailboxReportAttachments', 'Get-GroupReportAttachments') {
     $def = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq $fn }, $false)
     if (-not $def) { throw "Funktion nicht gefunden: $fn" }
     Invoke-Expression $def[0].Extent.Text
 }
 $script:Version = 'test'
+$script:ProgressTimer = [Diagnostics.Stopwatch]::StartNew()
 
 $pass = 0; $fail = 0
 function T($name, $ist, $soll) {
@@ -355,6 +356,37 @@ function Start-Process { param($FilePath) }   # niemand kommt zurück
 $m = try { Get-GraphTokenBrowser -Scope 'x' -TimeoutSeconds 1 6>$null; 'kein Fehler' } catch { "$_" }
 T 'Frist: Hinweis auf -UseDeviceCode' ($m -match 'Keine Anmeldung im Browser.*-UseDeviceCode') $true
 Remove-Item Function:\Start-Process, Function:\Invoke-RestMethod
+
+Write-Output "`n######## Fortschrittsanzeige ########"
+& {
+    $script:prog = New-Object Collections.ArrayList
+    function Write-Progress { param($Activity, $Status, $PercentComplete, [switch]$Completed) [void]$script:prog.Add([pscustomobject]@{ A = $Activity; S = $Status; C = [bool]$Completed }) }
+    Show-Progress -Activity 'x' -Status 'a' -Force
+    Show-Progress -Activity 'x' -Status 'b'            # sofort danach: gedrosselt
+    Show-Progress -Activity 'x' -Completed
+    T 'Force zeigt, Drossel schluckt, Completed schließt' (($script:prog | ForEach-Object { "$($_.S)$(if ($_.C) { '|fertig' })" }) -join ',') 'a,|fertig'
+    function Write-Progress { throw 'kein Host' }
+    T 'Host ohne Write-Progress bricht nicht ab' (Werfen { Show-Progress -Activity 'x' -Force }) $false
+
+    $script:prog.Clear()
+    function Write-Progress { param($Activity, $Status, $PercentComplete, [switch]$Completed) [void]$script:prog.Add([pscustomobject]@{ A = $Activity; S = $Status; C = [bool]$Completed }) }
+    function Write-Host { }
+    function Get-GraphPages { param($Uri, $Token) @{ id = 'm1' }, @{ id = 'm2' } }
+    function Invoke-Graph { param($Uri, $Token) @{ value = @(@{ name = 'r.xml'; contentBytes = 'eA==' }) } }
+    $mb = @(Get-MailboxReportAttachments -Mailbox 'dmarc@contoso.com' -Token 't' -Since (Get-Date))
+    T 'Postfach: Anhänge trotz Fortschritt'     $mb.Count 2
+    T 'Postfach: Fortschritt beginnt und endet' ((@($script:prog | Where-Object A -eq 'Postfach lesen').Count -ge 2) -and $script:prog[-1].C) $true
+
+    $script:prog.Clear()
+    function Invoke-Graph { param($Uri, $Token)
+        if ($Uri -match 'groups\?') { @{ value = @(@{ id = 'g1'; displayName = 'Admin' }) } }
+        else { @{ value = @(@{ name = 'r.xml'; contentBytes = 'eA==' }) } } }
+    function Get-GraphPages { param($Uri, $Token)
+        if ($Uri -match '/threads\?') { @{ id = 't1' }, @{ id = 't2' } } else { @{ id = 'p1'; hasAttachments = $true } } }
+    $gr = @(Get-GroupReportAttachments -Group 'dmarc@contoso.com' -Token 't' -Since (Get-Date).AddDays(-1))
+    T 'Gruppe: Anhänge trotz Fortschritt'     $gr.Count 2
+    T 'Gruppe: Fortschritt beginnt und endet' ((@($script:prog | Where-Object A -eq 'Gruppenpostfach lesen').Count -ge 2) -and $script:prog[-1].C) $true
+}
 
 Write-Output "`n######## Ganzer Lauf gegen einen Ordner ########"
 $tmp = Join-Path $env:TEMP ('dmarc-' + [guid]::NewGuid().ToString('N'))
