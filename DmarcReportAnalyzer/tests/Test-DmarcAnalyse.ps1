@@ -222,6 +222,12 @@ T 'Auffällig vor Zeitraum'       ($vh -match '<th>Auffällig</th><th>Zeitraum</
 T 'Einzelheiten: Signaturen mit + wie in der Tabelle' (($vh -match '<li>[^<]*DKIM contoso\.com=pass \+ contoso\.com=fail') -and ($vh -notmatch '<li>[^<]*=pass; ')) $true
 T 'Einzelheiten brechen um, statt die Tabelle zu verbreitern' ($vh -match 'tr\.det li,tr\.det p\{white-space:normal;overflow-wrap:anywhere\}') $true
 T 'Einzelheiten-Kasten an sichtbare Breite gebunden' ($vh -match 'tr\.det details\{[^}]*max-width:min\(100%,calc\(100vw - 56px\)\);position:sticky;left:0\}') $true
+# Langer Rückwärtsname (Exchange Online) schob die Tabelle rechts über den Rand (24.11.2026, 1.2.3).
+$vs = @(Get-DmarcSources -Rows $vr); $vs[0].Ptr = 'mail-norwayeastazlp170130007.outbound.protection.outlook.com'
+$vh2 = New-DmarcHtmlReport -Domains $vd -Sources $vs -Recommendations @() -Rows $vr -Title 'T' -Origin 'T'
+T 'Quelle: Hostname bricht nach Punkten um' ($vh2 -match "<span class='mut'>mail-norwayeastazlp170130007\.<wbr>outbound\.<wbr>protection\.<wbr>outlook\.<wbr>com</span>") $true
+T 'Quelle: IP bricht nach Punkten um' ($vh2 -match '<td>192\.<wbr>0\.<wbr>2\.<wbr>30<br>') $true
+T 'Tabelle: schmaler unter 1100 px' ($vh -match '@media \(max-width:1100px\)\{table\{font-size:13px\}') $true
 
 Write-Output "`n######## Einzelheiten: wohin, Grund, Selektor ########"
 function RecVoll($ip, $count, $dkim, $spf, $to = '', $reason = '', $sel = 'selector1', $auth = $true) {

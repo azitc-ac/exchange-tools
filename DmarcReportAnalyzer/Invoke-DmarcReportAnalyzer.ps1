@@ -87,7 +87,7 @@ param(
 )
 
 # Einzige Stelle fuer die Versionsnummer; Build und Release-Tag lesen sie hier aus.
-$script:Version = '1.2.3'
+$script:Version = '1.2.4'
 
 #region ------------------------------------------------------------ Fortschritt
 
@@ -670,6 +670,7 @@ function New-DmarcHtmlReport {
     param([object[]]$Domains, [object[]]$Sources, [object[]]$Recommendations, [object[]]$Rows, [string]$Title, [string]$Origin,
           [hashtable]$Trace = @{})
     $e = { param($v) [System.Net.WebUtility]::HtmlEncode("$v") }
+    $brk = { param($v) ([System.Net.WebUtility]::HtmlEncode("$v")) -replace '([.:])', '$1<wbr>' }
     $sb = New-Object System.Text.StringBuilder
     $fmtDate = { param($d) if ($d) { $d.ToString('dd.MM.yyyy') } else { '' } }
 
@@ -683,14 +684,14 @@ details{background:var(--card);border:1px solid var(--line);border-radius:8px;pa
 details li{margin:3px 0}.small{font-size:12px}
 body{background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,Segoe UI,sans-serif;margin:0;padding:16px;max-width:1200px;margin:auto}
 h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:28px 0 8px;border-bottom:1px solid var(--line);padding-bottom:4px}
-.mut{color:var(--mut)}table{border-collapse:collapse;width:100%;margin:6px 0}th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+.mut{color:var(--mut)}table{border-collapse:collapse;width:100%;margin:6px 0}th,td{text-align:left;padding:5px 6px;border-bottom:1px solid var(--line);vertical-align:top}
 th{font-weight:600;color:var(--mut)}td.n{text-align:right;font-variant-numeric:tabular-nums}.wrap{overflow-x:auto}
 .ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}
 .cards{display:flex;flex-wrap:wrap;gap:10px}.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 14px;min-width:150px}
 .card b{display:block;font-size:20px}.tag{font-size:12px;padding:1px 6px;border-radius:10px;border:1px solid var(--line)}
 svg text{fill:var(--mut);font-size:10px}
-td.dkim{overflow-wrap:anywhere;min-width:10em}td.auff{min-width:9em}
-@media (max-width:700px){body{padding:10px}th,td{padding:4px 5px}}
+td.dkim{overflow-wrap:anywhere;min-width:8em}td.auff{min-width:7em}
+@media (max-width:1100px){table{font-size:13px}th,td{padding:4px 5px}}@media (max-width:700px){body{padding:10px}}
 </style></head><body>
 <h1>$(& $e $Title)</h1><div class="mut">Quelle: $(& $e $Origin) · erstellt $(Get-Date -Format 'dd.MM.yyyy HH:mm') · DmarcReportAnalyzer $script:Version</div>
 "@)
@@ -776,7 +777,9 @@ td.dkim{overflow-wrap:anywhere;min-width:10em}td.auff{min-width:9em}
     foreach ($s in $Sources) {
         $pct = if ($s.Count) { [math]::Round(100.0 * $s.DmarcPass / $s.Count) } else { 0 }
         $cls = if ($pct -ge 98) { 'ok' } elseif ($pct -ge 50) { 'warn' } else { 'bad' }
-        $src = if ($s.Ptr) { "$(& $e $s.SourceIp)<br><span class='mut'>$(& $e $s.Ptr)</span>" } else { & $e $s.SourceIp }
+        # Hostnamen und IPv6 dürfen nach Punkt/Doppelpunkt umbrechen - sonst schiebt ein langer
+        # Rückwärtsname (mail-...protection.outlook.com) die Tabelle über den Rand.
+        $src = if ($s.Ptr) { "$(& $brk $s.SourceIp)<br><span class='mut'>$(& $brk $s.Ptr)</span>" } else { & $brk $s.SourceIp }
         $zeit = if ($s.FirstDay) { $a = $s.FirstDay.ToString('dd.MM.'); $b = $s.LastDay.ToString('dd.MM.'); if ($a -eq $b) { $a } else { "$a – $b" } } else { '' }
         $auff = @(); $hl = $false
         foreach ($k in 'Fail', 'DkimGebrochen', 'NurSpf', 'Weiterleitung', 'ZweitSignatur') {
@@ -789,7 +792,7 @@ td.dkim{overflow-wrap:anywhere;min-width:10em}td.auff{min-width:9em}
         $dkimCls = if ($s.DkimAligned -lt $s.Count -and "$($s.Service)" -notlike 'Weiterleitung*') { 'n warn' } else { 'n' }
         # DKIM: eine Zeile je vorgekommener Kombination, mehrere Signaturen derselben Mail mit "+".
         $dkimHtml = (@("$($s.DkimResults)" -split ' \| ' | ForEach-Object { & $e (($_ -split ';\s*') -join ' + ') }) -join '<br>')
-        [void]$sb.Append("<tr id='$(& $e $s.Id)'$trc><td>$(& $e $s.Domain)</td><td>$src</td><td>$(& $e $s.Service)</td><td class='auff'>$($auff -join '<br>')</td><td>$zeit</td><td class='n'>$($s.Count)</td><td class='n $cls'>$pct %</td><td class='$dkimCls'>$($s.DkimAligned)</td><td class='n'>$($s.SpfAligned)</td><td class='n'>$($s.Quarantined + $s.Rejected)</td><td class='small dkim'>$dkimHtml</td><td>$(& $e $s.Reporters)</td></tr>")
+        [void]$sb.Append("<tr id='$(& $e $s.Id)'$trc><td>$(& $brk $s.Domain)</td><td>$src</td><td>$(& $e $s.Service)</td><td class='auff'>$($auff -join '<br>')</td><td>$zeit</td><td class='n'>$($s.Count)</td><td class='n $cls'>$pct %</td><td class='$dkimCls'>$($s.DkimAligned)</td><td class='n'>$($s.SpfAligned)</td><td class='n'>$($s.Quarantined + $s.Rejected)</td><td class='small dkim'>$dkimHtml</td><td>$(& $brk $s.Reporters)</td></tr>")
         # Einzelheiten: die auffälligen Datensätze dieser Quelle - wann, wer meldet, wohin, wie.
         $det = @($Rows | Where-Object { $_.Domain -eq $s.Domain -and $_.SourceIp -eq $s.SourceIp -and (Get-DmarcRowFinding $_) } | Sort-Object Begin -Descending)
         if ($det.Count) {
