@@ -196,10 +196,29 @@ $zid = ($bfs | Where-Object SourceIp -eq '192.0.2.20').Id
 T 'auffällige Zeile hervorgehoben' ($bh -match "<tr id='$zid' class='hl'>") $true
 T 'saubere Zeile nicht'          ($bh -match "<tr id='$(($bfs | Where-Object SourceIp -eq '192.0.2.24').Id)' class='hl'>") $false
 T 'Empfehlung verlinkt Zeile'    ($bh -match "href='#$zid'") $true
-T 'pass; fail im HTML sichtbar'  ($bh -match 'contoso\.com=pass; contoso\.com=fail') $true
+T 'DKIM-Zelle: Signaturen mit +' ($bh -match "class='small dkim'>contoso\.com=pass \+ contoso\.com=fail<") $true
 T 'Befund mit Anzahl im HTML'    ($bh -match 'kein DKIM, nur SPF: 4') $true
 T 'Lesehilfe vorhanden'          ($bh -match 'So liest du den Bericht') $true
 T 'keine externen Quellen'      ($html -match '(src|href)\s*=\s*["'']https?://') $false
+
+Write-Output "`n######## Darstellung: Karte, Verlauf, Tabelle ########"
+# Zwei Quellen mit verschiedenen DKIM-Kombinationen, Tage 11., 13. und 16.11. (12., 14., 15. ohne Report), eine Quarantäne.
+$v1 = Rep 'Example Mail' 'r-v1' '2026-11-11' '2026-11-12' @((Rec '192.0.2.30' 5 'pass' 'pass' 'none' 'contoso.com' @('contoso.com=pass')))
+$v2 = Rep 'Example Mail' 'r-v2' '2026-11-13' '2026-11-14' @((Rec '192.0.2.30' 2 'pass' 'pass' 'none' 'contoso.com' @('contoso.com=pass', 'contoso.com=fail')), (Rec '198.51.100.40' 3 'fail' 'fail' 'quarantine')) 'quarantine'
+$v3 = Rep 'Example Mail' 'r-v3' '2026-11-16' '2026-11-17' @((Rec '192.0.2.30' 4 'pass' 'pass')) 'quarantine'
+$vr = @(Get-DmarcRows -Reports @(@($v1, $v2, $v3) | ForEach-Object { ConvertFrom-DmarcXml -Xml $_ }))
+$vd = @(Get-DmarcDomainSummary -Rows $vr)
+$vh = New-DmarcHtmlReport -Domains $vd -Sources @(Get-DmarcSources -Rows $vr) -Recommendations @() -Rows $vr -Title 'T' -Origin 'T'
+T 'Summe Quarantäne je Domain'   $vd[0].Quarantined 3
+T 'Karte: ausgewertet, nicht "Mails · p="' (($vh -match '14 Mails ausgewertet') -and ($vh -notmatch 'Mails · p=')) $true
+T 'Karte: Quarantäne hervorgehoben' ($vh -match "<span class='bad'>davon 3 in Quarantäne/abgewiesen</span>") $true
+T 'Karte: Policy abgesetzt'      ($vh -match 'Policy: p=quarantine') $true
+T 'Verlauf: Lücken je leerem Tag' ([regex]::Matches($vh, "class='leer'").Count) 3
+T 'Verlauf: 6 Tage durchgehend'  ([regex]::Matches($vh, '<title>\d\d\.11\. ').Count) 9
+T 'Verlauf: Beschriftung jeder 2. Tag' (([regex]::Matches($vh, "text-anchor='middle'>(\d\d\.\d\d\.)<") | ForEach-Object { $_.Groups[1].Value }) -join ',') '11.11.,13.11.,15.11.'
+T 'Verlauf: Maximum an der Achse, nicht in der Legende' (($vh -match "text-anchor='end'>5<") -and ($vh -notmatch 'Fail · Maximum')) $true
+T 'DKIM: Kombinationen je Zeile' ($vh -match "class='small dkim'>contoso\.com=pass<br>contoso\.com=pass \+ contoso\.com=fail<") $true
+T 'Auffällig vor Zeitraum'       ($vh -match '<th>Auffällig</th><th>Zeitraum</th>') $true
 
 Write-Output "`n######## Einzelheiten: wohin, Grund, Selektor ########"
 function RecVoll($ip, $count, $dkim, $spf, $to = '', $reason = '', $sel = 'selector1', $auth = $true) {
@@ -386,6 +405,25 @@ Write-Output "`n######## Fortschrittsanzeige ########"
     $gr = @(Get-GroupReportAttachments -Group 'dmarc@contoso.com' -Token 't' -Since (Get-Date).AddDays(-1))
     T 'Gruppe: Anhänge trotz Fortschritt'     $gr.Count 2
     T 'Gruppe: Fortschritt beginnt und endet' ((@($script:prog | Where-Object A -eq 'Gruppenpostfach lesen').Count -ge 2) -and $script:prog[-1].C) $true
+
+    # Datumsfilter beim Server: genutzt, wenn Graph ihn annimmt; sonst (Fehler oder leer) alles holen.
+    $script:uris = New-Object Collections.ArrayList
+    function Get-GraphPages { param($Uri, $Token) [void]$script:uris.Add($Uri)
+        if ($Uri -match '/threads\?') { @{ id = 't1' }, @{ id = 't2' } } else { @{ id = 'p1'; hasAttachments = $true } } }
+    [void](Get-GroupReportAttachments -Group 'dmarc@contoso.com' -Token 't' -Since (Get-Date).AddDays(-1))
+    T 'Gruppe: Filter beim Server genutzt' (@($script:uris | Where-Object { $_ -match '/threads\?' }) -join '|') ($script:uris | Where-Object { $_ -match '/threads\?.*filter=lastDeliveredDateTime ge \d{4}-\d\d-\d\dT' })
+    $script:uris.Clear()
+    function Get-GraphPages { param($Uri, $Token) [void]$script:uris.Add($Uri)
+        if ($Uri -match 'filter=') { throw 'Invalid filter clause' }
+        if ($Uri -match '/threads\?') { @{ id = 't1' }, @{ id = 't2' } } else { @{ id = 'p1'; hasAttachments = $true } } }
+    $gr = @(Get-GroupReportAttachments -Group 'dmarc@contoso.com' -Token 't' -Since (Get-Date).AddDays(-1))
+    T 'Gruppe: Filter abgelehnt -> alle holen' "$($gr.Count) $(@($script:uris | Where-Object { $_ -match '/threads\?' -and $_ -notmatch 'filter=' }).Count)" '2 1'
+    $script:uris.Clear()
+    function Get-GraphPages { param($Uri, $Token) [void]$script:uris.Add($Uri)
+        if ($Uri -match 'filter=') { return }
+        if ($Uri -match '/threads\?') { @{ id = 't1' }, @{ id = 't2' } } else { @{ id = 'p1'; hasAttachments = $true } } }
+    $gr = @(Get-GroupReportAttachments -Group 'dmarc@contoso.com' -Token 't' -Since (Get-Date).AddDays(-1))
+    T 'Gruppe: Filter leer -> zur Sicherheit alle holen' $gr.Count 2
 }
 
 Write-Output "`n######## Ganzer Lauf gegen einen Ordner ########"

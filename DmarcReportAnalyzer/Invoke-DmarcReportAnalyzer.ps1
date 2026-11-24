@@ -87,7 +87,7 @@ param(
 )
 
 # Einzige Stelle fuer die Versionsnummer; Build und Release-Tag lesen sie hier aus.
-$script:Version = '1.2.1'
+$script:Version = '1.2.2'
 
 #region ------------------------------------------------------------ Fortschritt
 
@@ -413,6 +413,8 @@ function Get-DmarcDomainSummary {
             PassPct  = $(if ($total) { [math]::Round(100.0 * $pass / $total, 1) } else { 0 })
             Policy   = $latest.Policy
             Pct      = $latest.Pct
+            Quarantined = (($g | Where-Object Disposition -eq 'quarantine' | Measure-Object Count -Sum).Sum) + 0
+            Rejected    = (($g | Where-Object Disposition -eq 'reject' | Measure-Object Count -Sum).Sum) + 0
             Reports  = @($g | Select-Object Reporter, ReportId -Unique).Count
             Sources  = @($g.SourceIp | Sort-Object -Unique).Count
             Reporters = (@($g.Reporter | Sort-Object -Unique) -join ', ')
@@ -648,6 +650,8 @@ th{font-weight:600;color:var(--mut)}td.n{text-align:right;font-variant-numeric:t
 .cards{display:flex;flex-wrap:wrap;gap:10px}.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 14px;min-width:150px}
 .card b{display:block;font-size:20px}.tag{font-size:12px;padding:1px 6px;border-radius:10px;border:1px solid var(--line)}
 svg text{fill:var(--mut);font-size:10px}
+td.dkim{overflow-wrap:anywhere;min-width:12em}td.auff{min-width:11em}
+@media (max-width:700px){body{padding:10px}th,td{padding:4px 5px}}
 </style></head><body>
 <h1>$(& $e $Title)</h1><div class="mut">Quelle: $(& $e $Origin) · erstellt $(Get-Date -Format 'dd.MM.yyyy HH:mm') · DmarcReportAnalyzer $script:Version</div>
 "@)
@@ -658,6 +662,8 @@ svg text{fill:var(--mut);font-size:10px}
 <li><b>DMARC-Pass</b> heißt: SPF <i>oder</i> DKIM hat bestanden <i>und</i> passt zur Absenderdomain (&bdquo;aligned&ldquo;). Damit ist bestätigt, dass die Mail wirklich von dir kommt.</li>
 <li><b>DKIM ist das Wichtigere:</b> Die Signatur übersteht Weiterleitungen, SPF nicht. Ziel ist, dass jede eigene Quelle mit DKIM aligned ist. Eine Mail, die nur über SPF besteht, fällt nach einer Weiterleitung durch.</li>
 <li><b>Spalte &bdquo;Auffällig&ldquo;</b> (gelb hinterlegte Zeilen): <i>kein DKIM, nur SPF</i> - der Versandweg signiert nicht; <i>DKIM gebrochen, nur SPF</i> - signiert, aber die Mail wurde danach verändert; <i>zweite Signatur gebrochen</i> - eine gültige Signatur blieb übrig, harmlos; <i>Weiterleitung</i> - jemand hat deine Mail weitergeleitet, kein fremder Absender; <i>DMARC fail</i> - nicht bestanden: fremder Dienst, vergessener eigener Dienst oder Missbrauch.</li>
+<li><b>Spalte &bdquo;DKIM-Ergebnis&ldquo;:</b> je Zeile eine Kombination, wie sie in den Datensätzen vorkam (Signaturdomain=Ergebnis). Trug eine Mail mehrere Signaturen, sind sie mit &bdquo;+&ldquo; verbunden.</li>
+<li><b>Übersicht je Domain:</b> &bdquo;ausgewertet&ldquo; ist die Zahl der gemeldeten Mails; wie viele davon tatsächlich in Quarantäne kamen oder abgewiesen wurden, steht darunter. Die Policy ist nur die veröffentlichte Regel.</li>
 <li><b>Einzelheiten</b> unter einer auffälligen Quelle: je Datensatz Tag, Melder, Anzahl, Empfängerdomain (falls gemeldet), SPF, DKIM mit Selektor, Return-Path und Grund (etwa <i>forwarded</i>). Mit <code>-MessageTrace</code> stehen darunter die passenden Mails aus dem Message Trace des eigenen Tenants.</li>
 <li><b>Empfehlungen</b> nennen die Tage und verlinken die betroffene Zeile. Alle Einzeldatensätze (je Report und Tag) stehen in der CSV daneben, mit derselben Spalte &bdquo;Auffaellig&ldquo;.</li>
 <li><b>Policy-Stufen:</b> p=none beobachtet nur, p=quarantine schickt Fehlschläge in den Junk-Ordner, p=reject weist sie ab. Eine Stufe weiter erst, wenn über mindestens 14 Tage nahezu alles besteht und keine Mail mehr allein an SPF hängt.</li>
@@ -668,7 +674,10 @@ svg text{fill:var(--mut);font-size:10px}
     [void]$sb.Append('<h2>Übersicht je Domain</h2><div class="cards">')
     foreach ($d in $Domains) {
         $cls = if ($d.PassPct -ge 98) { 'ok' } elseif ($d.PassPct -ge 90) { 'warn' } else { 'bad' }
-        [void]$sb.Append("<div class='card'><span class='mut'>$(& $e $d.Domain)</span><b class='$cls'>$($d.PassPct) % Pass</b>$($d.Count) Mails · p=$(& $e $d.Policy)$(if ($d.Pct -and $d.Pct -ne '100') { " · pct=$(& $e $d.Pct)" })<br><span class='mut'>$(& $fmtDate $d.From) – $(& $fmtDate $d.To) · $($d.Reports) Reports · $($d.Sources) Quellen</span><br><span class='mut'>Berichtet von: $(& $e $d.Reporters)</span></div>")
+        # Menge und Policy getrennt: "40 Mails · p=quarantine" las sich wie "40 Mails in Quarantäne".
+        $hart = [int]$d.Quarantined + [int]$d.Rejected
+        $hartCls = if ($hart -gt 0) { 'bad' } else { 'mut' }
+        [void]$sb.Append("<div class='card'><span class='mut'>$(& $e $d.Domain)</span><b class='$cls'>$($d.PassPct) % Pass</b>$($d.Count) Mails ausgewertet<br><span class='$hartCls'>davon $hart in Quarantäne/abgewiesen</span><br>Policy: p=$(& $e $d.Policy)$(if ($d.Pct -and $d.Pct -ne '100') { ", pct=$(& $e $d.Pct)" })<br><span class='mut'>$(& $fmtDate $d.From) – $(& $fmtDate $d.To) · $($d.Reports) Reports · $($d.Sources) Quellen</span><br><span class='mut'>Berichtet von: $(& $e $d.Reporters)</span></div>")
     }
     [void]$sb.Append('</div>')
 
@@ -691,23 +700,40 @@ svg text{fill:var(--mut);font-size:10px}
             Fail = (($_.Group | Where-Object { -not $_.DmarcPass } | Measure-Object Count -Sum).Sum) + 0 }
     })
     if ($daily.Count -gt 0) {
+        # Durchgehende Zeitachse: Tage ohne Report bleiben als Lücke sichtbar, statt zu verschwinden.
+        $byDay = @{}; foreach ($d in $daily) { $byDay[$d.Day] = $d }
+        $first = [datetime]::ParseExact($daily[0].Day, 'yyyy-MM-dd', $null); $last = [datetime]::ParseExact($daily[-1].Day, 'yyyy-MM-dd', $null)
+        $span = @(for ($t = $first; $t -le $last; $t = $t.AddDays(1)) { $t })
         $max = ($daily | ForEach-Object { $_.Pass + $_.Fail } | Measure-Object -Maximum).Maximum
         if (-not $max) { $max = 1 }
-        $w = [math]::Max(300, $daily.Count * 22); $h = 140
-        [void]$sb.Append("<h2>Verlauf je Tag</h2><div class='wrap'><svg width='$w' height='$($h + 30)' role='img' aria-label='Mails je Tag'>")
+        $pitch = 22; $left = 34; $h = 140; $top = 8
+        # Beschriftung höchstens alle 44 px - "dd.MM." braucht etwa 34 px.
+        $step = [math]::Max(1, [math]::Ceiling(44 / $pitch))
+        $w = [math]::Max(300, $left + $span.Count * $pitch + 4)
+        [void]$sb.Append("<h2>Verlauf je Tag</h2><div class='wrap'><svg width='$w' height='$($top + $h + 24)' role='img' aria-label='Mails je Tag'>")
+        $yb = $top + $h
+        [void]$sb.Append("<line x1='$left' y1='$top' x2='$($w - 2)' y2='$top' stroke='var(--line)' stroke-dasharray='3 3'/><line x1='$left' y1='$yb' x2='$($w - 2)' y2='$yb' stroke='var(--line)'/>")
+        [void]$sb.Append("<text x='$($left - 4)' y='$($top + 4)' text-anchor='end'>$max</text><text x='$($left - 4)' y='$($yb + 4)' text-anchor='end'>0</text>")
         $i = 0
-        foreach ($day in $daily) {
-            $x = $i * 22 + 4
-            $hp = [math]::Round($h * $day.Pass / $max); $hf = [math]::Round($h * $day.Fail / $max)
-            [void]$sb.Append("<rect x='$x' y='$($h - $hp - $hf)' width='16' height='$hf' fill='var(--bad)'><title>$($day.Day): $($day.Fail) Fail</title></rect>")
-            [void]$sb.Append("<rect x='$x' y='$($h - $hp)' width='16' height='$hp' fill='var(--ok)'><title>$($day.Day): $($day.Pass) Pass</title></rect>")
-            if ($i % [math]::Max(1, [math]::Ceiling($daily.Count / 10)) -eq 0) { [void]$sb.Append("<text x='$x' y='$($h + 14)'>$($day.Day.Substring(5))</text>") }
+        foreach ($t in $span) {
+            $key = $t.ToString('yyyy-MM-dd'); $label = $t.ToString('dd.MM.')
+            $x = $left + $i * $pitch + 3
+            $day = $byDay[$key]
+            if ($day) {
+                $hp = [math]::Round($h * $day.Pass / $max); $hf = [math]::Round($h * $day.Fail / $max)
+                [void]$sb.Append("<rect x='$x' y='$($yb - $hp - $hf)' width='16' height='$hf' fill='var(--bad)'><title>$label $($day.Fail) Fail</title></rect>")
+                [void]$sb.Append("<rect x='$x' y='$($yb - $hp)' width='16' height='$hp' fill='var(--ok)'><title>$label $($day.Pass) Pass</title></rect>")
+            } else {
+                [void]$sb.Append("<rect class='leer' x='$x' y='$($yb - 3)' width='16' height='3' fill='var(--line)'><title>$label kein Report</title></rect>")
+            }
+            if ($i % $step -eq 0) { [void]$sb.Append("<text x='$($x + 8)' y='$($yb + 16)' text-anchor='middle'>$label</text>") }
             $i++
         }
-        [void]$sb.Append("</svg></div><div class='mut'><span class='ok'>■</span> DMARC-Pass &nbsp; <span class='bad'>■</span> Fail · Maximum $max Mails/Tag</div>")
+        [void]$sb.Append("</svg></div><div class='mut'><span class='ok'>■</span> DMARC-Pass &nbsp; <span class='bad'>■</span> DMARC-Fail &nbsp; <span style='color:var(--line)'>▬</span> Tag ohne Report</div>")
+        [void]$sb.Append("<div class='mut small'>Höhe: Mails je Tag nach Beginn des Report-Zeitraums; die gestrichelte Linie ist der höchste Tag ($max Mails).</div>")
     }
 
-    [void]$sb.Append('<h2>Quellen</h2><div class="wrap"><table><tr><th>Domain</th><th>Quelle</th><th>Dienst</th><th>Zeitraum</th><th class="n">Mails</th><th class="n">DMARC-Pass</th><th class="n">DKIM aligned</th><th class="n">SPF aligned</th><th class="n">Quarantäne/Reject</th><th>DKIM-Ergebnis</th><th>Auffällig</th><th>Berichtet von</th></tr>')
+    [void]$sb.Append('<h2>Quellen</h2><div class="wrap"><table><tr><th>Domain</th><th>Quelle</th><th>Dienst</th><th>Auffällig</th><th>Zeitraum</th><th class="n">Mails</th><th class="n">DMARC-Pass</th><th class="n">DKIM aligned</th><th class="n">SPF aligned</th><th class="n">Quarantäne/Reject</th><th>DKIM-Ergebnis</th><th>Berichtet von</th></tr>')
     foreach ($s in $Sources) {
         $pct = if ($s.Count) { [math]::Round(100.0 * $s.DmarcPass / $s.Count) } else { 0 }
         $cls = if ($pct -ge 98) { 'ok' } elseif ($pct -ge 50) { 'warn' } else { 'bad' }
@@ -722,7 +748,9 @@ svg text{fill:var(--mut);font-size:10px}
         }
         $trc = if ($hl) { " class='hl'" } else { '' }
         $dkimCls = if ($s.DkimAligned -lt $s.Count -and "$($s.Service)" -notlike 'Weiterleitung*') { 'n warn' } else { 'n' }
-        [void]$sb.Append("<tr id='$(& $e $s.Id)'$trc><td>$(& $e $s.Domain)</td><td>$src</td><td>$(& $e $s.Service)</td><td>$zeit</td><td class='n'>$($s.Count)</td><td class='n $cls'>$pct %</td><td class='$dkimCls'>$($s.DkimAligned)</td><td class='n'>$($s.SpfAligned)</td><td class='n'>$($s.Quarantined + $s.Rejected)</td><td class='small'>$(& $e $s.DkimResults)</td><td>$($auff -join '<br>')</td><td>$(& $e $s.Reporters)</td></tr>")
+        # DKIM: eine Zeile je vorgekommener Kombination, mehrere Signaturen derselben Mail mit "+".
+        $dkimHtml = (@("$($s.DkimResults)" -split ' \| ' | ForEach-Object { & $e (($_ -split ';\s*') -join ' + ') }) -join '<br>')
+        [void]$sb.Append("<tr id='$(& $e $s.Id)'$trc><td>$(& $e $s.Domain)</td><td>$src</td><td>$(& $e $s.Service)</td><td class='auff'>$($auff -join '<br>')</td><td>$zeit</td><td class='n'>$($s.Count)</td><td class='n $cls'>$pct %</td><td class='$dkimCls'>$($s.DkimAligned)</td><td class='n'>$($s.SpfAligned)</td><td class='n'>$($s.Quarantined + $s.Rejected)</td><td class='small dkim'>$dkimHtml</td><td>$(& $e $s.Reporters)</td></tr>")
         # Einzelheiten: die auffälligen Datensätze dieser Quelle - wann, wer meldet, wohin, wie.
         $det = @($Rows | Where-Object { $_.Domain -eq $s.Domain -and $_.SourceIp -eq $s.SourceIp -and (Get-DmarcRowFinding $_) } | Sort-Object Begin -Descending)
         if ($det.Count) {
@@ -934,8 +962,15 @@ function Get-GroupReportAttachments {
     Write-Host 'Lese Unterhaltungen und Anhänge ... (bei vielen Reports einige Minuten)' -ForegroundColor Gray
     $akt = 'Gruppenpostfach lesen'
     Show-Progress -Activity $akt -Status 'Unterhaltungen auflisten' -Force
-    # Alle Unterhaltungen holen und hier filtern, damit die Zählung zeigt, was wo wegfällt.
-    $all = @(Get-GraphPages -Uri "https://graph.microsoft.com/v1.0/groups/$gid/threads?`$select=id,topic,lastDeliveredDateTime,hasAttachments&`$top=50" -Token $Token)
+    # Erst beim Server nach Datum filtern (große Gruppen haben Hunderte alter Unterhaltungen). Lehnt
+    # Graph den Filter ab oder liefert er nichts, alle holen - die Prüfung hier unten gilt in beiden Fällen.
+    $base = "https://graph.microsoft.com/v1.0/groups/$gid/threads?`$select=id,topic,lastDeliveredDateTime,hasAttachments&`$top=50"
+    $all = @(); $serverFilter = $false
+    try {
+        $all = @(Get-GraphPages -Uri ($base + "&`$filter=lastDeliveredDateTime ge $($Since.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))") -Token $Token)
+        $serverFilter = $all.Count -gt 0
+    } catch { Write-Verbose "Datumsfilter beim Server abgelehnt: $($_.Exception.Message)" }
+    if (-not $serverFilter) { $all = @(Get-GraphPages -Uri $base -Token $Token) }
     $inRange = @($all | Where-Object { -not $_.lastDeliveredDateTime -or ([datetime]$_.lastDeliveredDateTime) -ge $Since })
     $n = @{ Posts = 0; PostsMitAnhang = 0; Anhaenge = 0 }
     $i = 0
@@ -953,8 +988,9 @@ function Get-GroupReportAttachments {
         }
     }
     Show-Progress -Activity $akt -Completed
-    Write-Host ("Unterhaltungen: {0} gesamt, {1} seit {2:dd.MM.yyyy}; Beiträge: {3}, davon mit Anhang {4}; Anhänge: {5}" -f `
-        $all.Count, $inRange.Count, $Since, $n.Posts, $n.PostsMitAnhang, $n.Anhaenge) -ForegroundColor Gray
+    $gesamt = if ($serverFilter) { 'Filter beim Server' } else { "$($all.Count) gesamt" }
+    Write-Host ("Unterhaltungen: {0}, {1} seit {2:dd.MM.yyyy}; Beiträge: {3}, davon mit Anhang {4}; Anhänge: {5}" -f `
+        $gesamt, $inRange.Count, $Since, $n.Posts, $n.PostsMitAnhang, $n.Anhaenge) -ForegroundColor Gray
 }
 
 function Get-MailboxReportAttachments {
@@ -988,6 +1024,10 @@ $since = (Get-Date).ToUniversalTime().AddDays(-$Days)
 # Reports kommen mit 1-3 Tagen Verzug - im Postfach etwas weiter zurück lesen.
 $mailSince = $since.AddDays(-3)
 
+# Dauer je Phase in den Statuszeilen, damit sichtbar wird, wo ein langer Lauf die Zeit verbringt.
+$phase = [Diagnostics.Stopwatch]::StartNew()
+function Get-PhaseTime { $s = '({0:N0} s)' -f $phase.Elapsed.TotalSeconds; $phase.Restart(); $s }
+
 $files = @()
 switch ($PSCmdlet.ParameterSetName) {
     'Folder' {
@@ -1007,7 +1047,7 @@ switch ($PSCmdlet.ParameterSetName) {
         $files = @(Get-MailboxReportAttachments -Mailbox $Mailbox -Token $tok -Since $mailSince)
     }
 }
-Write-Host "Anhänge/Dateien gelesen: $($files.Count)" -ForegroundColor Gray
+Write-Host "Anhänge/Dateien gelesen: $($files.Count) $(Get-PhaseTime)" -ForegroundColor Gray
 
 $reports = @(); $broken = 0; $i = 0
 foreach ($f in $files) {
@@ -1019,7 +1059,7 @@ foreach ($f in $files) {
 Show-Progress -Activity 'Reports entpacken und lesen' -Completed
 $reports = @($reports | Where-Object { $_.End -and $_.End -ge $since })
 $rows = @(Get-DmarcRows -Reports $reports)
-Write-Host ("Reports im Zeitraum: {0}, Datensätze: {1}, nicht lesbar: {2}" -f $reports.Count, $rows.Count, $broken) -ForegroundColor Gray
+Write-Host ("Reports im Zeitraum: {0}, Datensätze: {1}, nicht lesbar: {2} {3}" -f $reports.Count, $rows.Count, $broken, (Get-PhaseTime)) -ForegroundColor Gray
 if ($rows.Count -eq 0) { Write-Warning "Keine DMARC-Daten in den letzten $Days Tagen gefunden."; exit 2 }
 
 if (-not $NoReverseDns) {
@@ -1032,6 +1072,7 @@ if (-not $NoReverseDns) {
         [void](Resolve-Ptr $ip)
     }
     Show-Progress -Activity 'Rückwärtsnamen (PTR)' -Completed
+    Write-Host "Reverse-DNS fertig $(Get-PhaseTime)" -ForegroundColor Gray
     foreach ($r in $rows) { $r.Ptr = $script:PtrCache[$r.SourceIp]; $r.Service = Get-SenderService $r.Ptr }
 }
 if (-not $NoMicrosoftRanges) {
@@ -1042,6 +1083,7 @@ if (-not $NoMicrosoftRanges) {
         foreach ($ip in @($rows.SourceIp | Sort-Object -Unique)) { $msIp[$ip] = Test-Microsoft365Ip $ip $msRanges }
         foreach ($r in $rows) { if (-not $r.Service -and $msIp[$r.SourceIp]) { $r.Service = 'Microsoft 365' } }
     }
+    Write-Host "Adressbereiche Microsoft 365 geprüft $(Get-PhaseTime)" -ForegroundColor Gray
 }
 
 $domains = @(Get-DmarcDomainSummary -Rows $rows)
