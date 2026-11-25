@@ -13,7 +13,8 @@ $ast = [System.Management.Automation.Language.Parser]::ParseFile($Skript, [ref]$
 $fns = 'New-CheckResult', 'ConvertTo-ExchangeBuild', 'Get-DedicatedAppMinBuild', 'Test-ServerBuild',
        'Get-TenantRoutingDomain', 'Test-RemoteRouting', 'Test-IntraOrgConnector', 'Test-DedicatedAppOverride',
        'Test-AuthServerAppId', 'Get-DedicatedAppId', 'Get-OAuthAppId', 'Test-OAuthResult', 'Test-AuthCertificate',
-       'Test-GraphRoute', 'Test-EndpointResult', 'Test-EwsLogHit', 'Get-OverallExitCode'
+       'Get-GraphOverride', 'Test-GraphRoute', 'Test-EndpointResult', 'Test-ContainsAddress', 'Get-EwsLogLookup',
+       'Test-EwsLogRoute', 'Test-EwsLogHit', 'Get-OverallExitCode'
 foreach ($fn in $fns) {
     $def = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq $fn }, $false)
     if (-not $def) { throw "Function not found: $fn" }
@@ -167,6 +168,60 @@ T 'Graph-Hinweis'                     ($r.Fix -match 'Graph API permissions') $t
 $r = Test-EwsLogHit $h 3 'ben@contoso.com'
 T 'Filter auf Adresse'                ($r.Finding -match '^1 hit') $true
 T 'fremde Adresse: OK'                (Test-EwsLogHit $h 3 'nobody@contoso.com').Status 'OK'
+
+$h2 = @((Hit 'ErrorProxyRequestProcessingFailed;ben@contoso.mail.onmicrosoft.com'), (Hit 'ErrorProxyRequestProcessingFailed;ruben@contoso.com'))
+$r = Test-EwsLogHit $h2 3 @('ben@contoso.com', 'ben@contoso.mail.onmicrosoft.com')
+T 'Filter trifft Routing-Adresse'     ($r.Finding -match '^1 hit') $true
+T 'ruben ist nicht ben'               (Test-EwsLogHit @($h2[1]) 3 'ben@contoso.com').Status 'OK'
+
+Write-Output "`n######## Schritt 8: benutzter Weg laut EWS-Log ########"
+# Line shape as written by Exchange SE, shortened; contoso data.
+function Sec($url, $adr) { "Target-$url|AT-<PII>$adr</PII>|Q_NL-0|QT-FederatedCrossForest|RID-1|;Failures=0;" }
+function Look($time, $sections, $n = 1, $action = 'GetUserAvailability') {
+    Hit ("${time},0f,15,2,2562,57,Unknown,,Negotiate,true,CONTOSO\anna,,UA,Target=None;,192.0.2.1,EX1,EX1.CONTOSO.COM,$action,200,,,'S:AS.ReqStats=federatedxforest=1;AddressCount=1;" + ($sections -join '') + "TAQ=588;ADLPR.D=https://autodiscover-s.outlook.com/autodiscover/autodiscover.svc;OCFLP.D=https://outlook.office365.com/EWS/Exchange.asmx;'") $n
+}
+$ben    = 'ben@contoso.mail.onmicrosoft.com'
+$graph  = Sec "https://graph.microsoft.com/v1.0/users/$ben/calendar/getschedule" $ben
+$ews    = Sec 'https://outlook.office365.com/EWS/Exchange.asmx' $ben
+$intern = Sec 'https://ex2.contoso.com/EWS/Exchange.asmx' 'carla@contoso.com'
+$gOn  = Ov 'EnableRouteThroughMSGraphFeature' 'RouteThroughMSGraph' 'Enabled=true' @() '2026-11-23T12:00:00Z'
+$gOff = Ov 'EnableRouteThroughMSGraphFeature' 'RouteThroughMSGraph' 'Enabled=false'
+$lg  = Look '2026-11-24T07:29:13.475Z' $graph 5
+$le  = Look '2026-11-24T06:00:00.000Z' $ews 3
+$alt = Look '2026-11-23T11:00:00.000Z' $ews 2
+function Rt($lines, $ov, $adr = @(), $n = 3) { Test-EwsLogRoute -Lines $lines -FileCount $n -Addresses $adr -Overrides $ov }
+T 'keine Logdateien: SKIP'            (Rt @() @($gOn) @() 0).Status 'SKIP'
+T 'Meldung: keine Logdateien'         ((Rt @() @($gOn) @() 0).Finding -match 'No EWS log files') $true
+$r = Rt @() @($gOn)
+T 'keine Abfrage: SKIP'               $r.Status 'SKIP'
+T 'SKIP sagt, was zu tun ist'         ($r.Finding -match 'Trigger a lookup') $true
+T 'Override an, Graph: OK'            (Rt @($lg) @($gOn)).Status 'OK'
+T 'Meldung nennt Graph und Stelle'    ((Rt @($lg) @($gOn)).Finding -match 'used Graph \(graph\.microsoft\.com, 2026-11-24 07:29:13 UTC, EWS_20261123-1\.LOG:5\)') $true
+$r = Rt @($le) @($gOn)
+T 'Override an, EWS: WARN'            $r.Status 'WARN'
+T 'WARN empfiehlt Refresh'            ($r.Fix -match 'VariantConfiguration') $true
+$r = Rt @($alt) @($gOn)
+T 'EWS vor Override-Aenderung: WARN'  $r.Status 'WARN'
+T 'Hinweis: Eintrag aelter'           ($r.Fix -match 'older than the override') $true
+T 'Override aus, EWS: INFO'           (Rt @($le) @($gOff)).Status 'INFO'
+T 'kein Override, EWS: INFO'          (Rt @($le) @()).Status 'INFO'
+T 'Override aus, Graph: WARN'         (Rt @($lg) @($gOff)).Status 'WARN'
+T 'Override unbekannt: INFO'          (Test-EwsLogRoute -Lines @($lg) -FileCount 3 -Overrides $null -OverridesUnknown).Status 'INFO'
+T 'letzte Zeile zaehlt: Graph'        (Rt @($le, $lg) @($gOn)).Status 'OK'
+T 'letzte Zeile zaehlt: EWS'          (Rt @($lg, $le) @($gOn)).Status 'WARN'
+T 'interner Server zaehlt nicht'      (Rt @((Look '2026-11-24T08:00:00.000Z' $intern)) @($gOn)).Status 'SKIP'
+T 'interner Server verdeckt nichts'   (Rt @($lg, (Look '2026-11-24T08:00:00.000Z' $intern)) @($gOn)).Status 'OK'
+T 'OCFLP.D ist kein Target'           @(Get-EwsLogLookup @($lg)).Count 1
+T 'andere SoapAction zaehlt nicht'    @(Get-EwsLogLookup @((Look '2026-11-24T08:00:00.000Z' $graph 1 'GetItem'))).Count 0
+T 'fremder Host mit Praefix'          @(Get-EwsLogLookup @((Look '2026-11-24T08:00:00.000Z' (Sec 'https://graph.microsoft.com.contoso.com/x' $ben)))).Count 0
+T 'zwei Ziele in einer Zeile'         @(Get-EwsLogLookup @((Look '2026-11-24T08:00:00.000Z' @($intern, $ews, $graph)))).Count 2
+T 'Adresse: Routing-Adresse trifft'   (Rt @($lg) @($gOn) @('ben@contoso.com', $ben)).Status 'OK'
+T 'Adresse: nur primaere trifft nicht' (Rt @($lg) @($gOn) @('ben@contoso.com')).Status 'SKIP'
+T 'Adresse: Meldung nennt andere'     ((Rt @($lg) @($gOn) @('ben@contoso.com')).Finding -match '1 lookup\(s\).*none for ben@contoso\.com') $true
+$mix = Look '2026-11-24T08:00:00.000Z' @((Sec 'https://graph.microsoft.com/v1.0/x' $ben), (Sec 'https://outlook.office365.com/EWS/Exchange.asmx' 'dora@contoso.mail.onmicrosoft.com'))
+T 'Adresse gilt je Ziel, nicht je Zeile' (Rt @($mix) @($gOn) @($ben)).Status 'OK'
+T 'Adresse als Ganzes'                (Test-ContainsAddress 'AT-<PII>ruben@contoso.com</PII>' @('ben@contoso.com')) $false
+T 'Adresse ohne Gross/Klein'          (Test-ContainsAddress 'AT-<PII>Ben@Contoso.com</PII>' @('ben@contoso.com')) $true
 
 Write-Output "`n######## Exitcode ########"
 T 'ohne FAIL: 0'                      (Get-OverallExitCode @((New-CheckResult 1 'a' 'WARN' 'x'), (New-CheckResult 2 'b' 'OK' 'y'))) 0

@@ -14,7 +14,8 @@
       5  dedicated hybrid app enabled (setting override)
       6  EvoSts auth server points to the app ID
       7  Exchange gets a token for that app, auth certificate valid, login.microsoftonline.com reachable
-      8  Graph or EWS route, endpoints reachable, recent errors in the EWS log
+      8  Graph or EWS route (configured, and actually used according to the EWS log), endpoints
+         reachable, recent errors in the EWS log
 
     Steps 1 and 9 are the client's view - use ExchangeTester (Free/Busy, On-Prem -> EXO) for those.
 
@@ -27,7 +28,8 @@
 
 .PARAMETER ExoMailbox
     An Exchange Online mailbox (its on-premises remote mailbox object) for step 2. Also used to
-    filter the EWS log.
+    filter the EWS log (by this address, the primary address and the remote routing address, because
+    the log names the routing address).
 
 .PARAMETER OutputPath
     Also write all results to this CSV file.
@@ -36,7 +38,8 @@
     Skip the TCP 443 tests.
 
 .PARAMETER EwsLogFiles
-    Number of most recent EWS log files to search. Default 3.
+    Number of most recent EWS log files to search. Default 3. Exchange starts a new file
+    about every hour; raise it if the last lookup is older.
 
 .PARAMETER PassThru
     Return the result objects.
@@ -60,7 +63,7 @@ param(
     [switch]$PassThru
 )
 
-$script:Version = '1.0.0'
+$script:Version = '1.1.0'
 $ErrorActionPreference = 'Stop'
 
 # Voraussetzungen. Der Block zwischen den Markern stammt aus build/Prolog.OnPrem.ps1
@@ -353,13 +356,20 @@ function Test-AuthCertificate {
     New-CheckResult 7 $check 'OK' "Auth certificate $tp valid for $days more day(s)"
 }
 
+function Get-GraphOverride {
+    # The Graph override is matched by name or section, because Microsoft documents only its name.
+    param([object[]]$Overrides, [switch]$EnabledOnly)
+    $g = @($Overrides | Where-Object { "$($_.Name)" -match 'RouteThroughMSGraph' -or "$($_.SectionName)" -match 'RouteThroughMSGraph' })
+    if ($EnabledOnly) { $g = @($g | Where-Object { @($_.Parameters | ForEach-Object { "$_" }) -match '^\s*Enabled\s*=\s*true\s*$' }) }
+    $g
+}
+
 function Test-GraphRoute {
-    # Step 8. Which route does the server use to Exchange Online? The Graph override is matched
-    # by name or section, because Microsoft documents only its name.
+    # Step 8. Which route is configured to Exchange Online? Test-EwsLogRoute shows the one used.
     param([object[]]$Overrides, [object[]]$Servers)
     $check = 'Route to Exchange Online'
-    $g = @($Overrides | Where-Object { "$($_.Name)" -match 'RouteThroughMSGraph' -or "$($_.SectionName)" -match 'RouteThroughMSGraph' })
-    $on = @($g | Where-Object { @($_.Parameters | ForEach-Object { "$_" }) -match '^\s*Enabled\s*=\s*true\s*$' })
+    $g = @(Get-GraphOverride $Overrides)
+    $on = @(Get-GraphOverride $Overrides -EnabledOnly)
     # Below the Graph build for sure (ExSetup.exe on this server) or only by AdminDisplayVersion,
     # which does not include hotfix updates - the second is only a warning.
     $lowSure   = @($Servers | Where-Object { $_.FileBuild -and [version]$_.FileBuild -lt $script:GraphMinBuild })
@@ -391,14 +401,83 @@ function Test-EndpointResult {
     }
 }
 
+function Test-ContainsAddress {
+    # Does the text contain one of the addresses as a whole (ben@ must not match ruben@)?
+    param([string]$Text, [string[]]$Addresses)
+    foreach ($a in @($Addresses | Where-Object { $_ })) {
+        if ($Text -match ('(?i)(?<![\w.+-])' + [regex]::Escape($a) + '(?![\w-])')) { return $true }
+    }
+    $false
+}
+
+function Get-EwsLogLookup {
+    # GetUserAvailability lines -> one object per lookup to Exchange Online. AS.ReqStats holds one
+    # section per target: "Target-<URL>|AT-<PII>address</PII>|...|QT-FederatedCrossForest|...|;".
+    # Targets on other hosts (on-premises servers, other organizations) are not counted.
+    param([object[]]$Lines)
+    foreach ($l in @($Lines | Where-Object { $_ })) {
+        $text = "$($l.Line)"
+        if ($text -notmatch 'GetUserAvailability' -or $text -notmatch 'AS\.ReqStats=') { continue }
+        $time = $null
+        $m = [regex]::Match($text, '^(\d{4}-\d\d-\d\dT[\d:.]+Z)')
+        if ($m.Success) {
+            $time = [datetime]::Parse($m.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)
+        }
+        $stats = $text.Substring($text.IndexOf('AS.ReqStats='))
+        foreach ($t in [regex]::Matches($stats, 'Target-(?<url>https?://[^|;\s]+)(?<rest>(?:(?!Target-http)[^;])*)')) {
+            $u = $null
+            if (-not [uri]::TryCreate($t.Groups['url'].Value, [UriKind]::Absolute, [ref]$u)) { continue }
+            $route = switch ($u.Host) { 'graph.microsoft.com' { 'Graph' } 'outlook.office365.com' { 'EWS' } default { $null } }
+            if (-not $route) { continue }
+            [pscustomobject]@{ Route = $route; HostName = $u.Host; Time = $time; Filename = $l.Filename; LineNumber = $l.LineNumber; Section = $t.Value }
+        }
+    }
+}
+
+function Test-EwsLogRoute {
+    # Step 8. Which route did the last lookup really take? $Lines: Select-String results, oldest
+    # first. $Addresses: the target's addresses - the log names the routing address, not the
+    # primary one. $Overrides: Get-SettingOverride output; -OverridesUnknown when it failed.
+    param([object[]]$Lines, [int]$FileCount, [string[]]$Addresses, [object[]]$Overrides, [switch]$OverridesUnknown)
+    $check = 'Route used (EWS log, this server)'
+    $again = 'Trigger a lookup On-Prem -> EXO through this server (Outlook, or ExchangeTester Free/Busy), then run the check again; -EwsLogFiles searches further back.'
+    if ($FileCount -eq 0) { return New-CheckResult 8 $check 'SKIP' 'No EWS log files found on this server.' }
+    $all = @(Get-EwsLogLookup $Lines)
+    if (-not $all) { return New-CheckResult 8 $check 'SKIP' "No lookup to Exchange Online in the last $FileCount file(s). $again" }
+    $hit = $all
+    if (@($Addresses | Where-Object { $_ })) {
+        $hit = @($all | Where-Object { Test-ContainsAddress $_.Section $Addresses })
+        if (-not $hit) { return New-CheckResult 8 $check 'SKIP' "$($all.Count) lookup(s) to Exchange Online in the last $FileCount file(s), none for $($Addresses[0]). $again" }
+    }
+    $last = $hit[-1]
+    $when = if ($last.Time) { $last.Time.ToString('yyyy-MM-dd HH:mm:ss') + ' UTC' } else { 'time unknown' }
+    $what = "Last lookup used $($last.Route) ($($last.HostName), $when, $($last.Filename):$($last.LineNumber))"
+    if ($OverridesUnknown) { return New-CheckResult 8 $check 'INFO' "$what; the configured route is unknown" }
+    $on = @(Get-GraphOverride $Overrides -EnabledOnly)
+    if ($on) {
+        if ($last.Route -eq 'Graph') { return New-CheckResult 8 $check 'OK' "$what - matches the Graph override" }
+        $changed = if ($on[0].WhenChanged) { ([datetime]$on[0].WhenChanged).ToUniversalTime() } else { $null }
+        if ($changed -and $last.Time -and $last.Time -lt $changed) {
+            return New-CheckResult 8 $check 'WARN' "$what, but the Graph override was changed later ($($changed.ToString('yyyy-MM-dd HH:mm:ss')) UTC)" "The log entry is older than the override. $again"
+        }
+        return New-CheckResult 8 $check 'WARN' "$what, although the Graph override is enabled" 'The override has not taken effect on this server, or not when that lookup ran: refresh VariantConfiguration (Get-ExchangeDiagnosticInfo -Process Microsoft.Exchange.Directory.TopologyService -Component VariantConfiguration -Argument Refresh), recycle MSExchangeServicesAppPool, allow some time, trigger a new lookup. Check the build of this server (step 4) as well.'
+    }
+    if ($last.Route -eq 'Graph') {
+        return New-CheckResult 8 $check 'WARN' "$what, but no Graph override is enabled" "Either the override was removed after that lookup, or it has a name this script does not know. $again"
+    }
+    New-CheckResult 8 $check 'INFO' "$what - matches the configuration (no Graph override)"
+}
+
 function Test-EwsLogHit {
     # Step 8. $Hits: Select-String results (Line, Filename, LineNumber). $FileCount: files searched.
-    param([object[]]$Hits, [int]$FileCount, [string]$Address)
+    # $Addresses: the target's addresses, the first one is shown.
+    param([object[]]$Hits, [int]$FileCount, [string[]]$Addresses)
     $check = 'EWS log errors (this server)'
     if ($FileCount -eq 0) { return New-CheckResult 8 $check 'SKIP' 'No EWS log files found on this server.' }
     $h = @($Hits | Where-Object { $_ })
-    if ($Address) { $h = @($h | Where-Object { "$($_.Line)" -match [regex]::Escape($Address) }) }
-    $scope = if ($Address) { " for $Address" } else { '' }
+    $adr = @($Addresses | Where-Object { $_ })
+    if ($adr) { $h = @($h | Where-Object { Test-ContainsAddress "$($_.Line)" $adr }) }
+    $scope = if ($adr) { " for $($adr[0])" } else { '' }
     if (-not $h) { return New-CheckResult 8 $check 'OK' "No EXNL/ErrorProxy/Forbidden entries$scope in the last $FileCount file(s)" }
     $graph = @($h | Where-Object { "$($_.Line)" -match 'GraphWebRequest' }).Count
     $last = $h[-1]
@@ -468,12 +547,16 @@ function Invoke-HybridFreeBusyCheck {
 
     # Step 2
     $routing = $null
+    $addresses = @($ExoMailbox | Where-Object { $_ })
     if ($ExoMailbox) {
         if (Get-Command Get-RemoteMailbox -ErrorAction SilentlyContinue) {
             $rm = Invoke-Guarded { Get-RemoteMailbox -Identity $ExoMailbox -ErrorAction Stop }
             $rmObj = if ($rm) { $rm[0] } else { $null }
             & $add (Test-RemoteRouting -Recipient $rmObj -Address $ExoMailbox)
-            if ($rmObj) { $routing = @(Get-TenantRoutingDomain @(("$($rmObj.RemoteRoutingAddress)" -replace '^(?i)smtp:', '' -split '@')[-1]))[0] }
+            if ($rmObj) {
+                $addresses = @(@($ExoMailbox, "$($rmObj.PrimarySmtpAddress)", ("$($rmObj.RemoteRoutingAddress)" -replace '^(?i)smtp:', '')) | Where-Object { $_ } | Select-Object -Unique)
+                $routing = @(Get-TenantRoutingDomain @(("$($rmObj.RemoteRoutingAddress)" -replace '^(?i)smtp:', '' -split '@')[-1]))[0]
+            }
         } else {
             & $add (New-CheckResult 2 'Target is a remote mailbox' 'SKIP' 'Get-RemoteMailbox is not available (RBAC role).')
         }
@@ -529,7 +612,9 @@ function Invoke-HybridFreeBusyCheck {
     $logDir = if ($env:ExchangeInstallPath) { Join-Path $env:ExchangeInstallPath 'Logging\Ews' } else { $null }
     $files = @(if ($logDir -and (Test-Path $logDir)) { Get-ChildItem $logDir -Filter *.log | Sort-Object LastWriteTime | Select-Object -Last $EwsLogFiles })
     $hits = @(if ($files) { $files | Select-String -Pattern 'EXNL|ErrorProxy|Forbidden' })
-    & $add (Test-EwsLogHit -Hits $hits -FileCount $files.Count -Address $ExoMailbox)
+    $lookups = @(if ($files) { $files | Select-String -Pattern 'GetUserAvailability.*AS\.ReqStats=.*Target-http' })
+    & $add (Test-EwsLogRoute -Lines $lookups -FileCount $files.Count -Addresses $addresses -Overrides $ov -OverridesUnknown:($null -eq $ov))
+    & $add (Test-EwsLogHit -Hits $hits -FileCount $files.Count -Addresses $addresses)
 
     # Sort-Object is not stable in Windows PowerShell 5.1: group by step, keep the order inside.
     $sorted = @(foreach ($st in @($results | ForEach-Object Step | Sort-Object -Unique)) { $results | Where-Object Step -eq $st })

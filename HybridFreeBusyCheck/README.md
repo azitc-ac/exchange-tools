@@ -13,10 +13,10 @@ behebt, als Vorschlag zum Kopieren.
 | Parameter | Bedeutung |
 |---|---|
 | `-OnPremMailbox` | on-prem-Postfach für `Test-OAuthConnectivity` (Schritt 7). Ohne Angabe wird der Token-Test übersprungen |
-| `-ExoMailbox` | Postfach in Exchange Online, geprüft wird sein Remote-Mailbox-Objekt (Schritt 2). Filtert auch das EWS-Log |
+| `-ExoMailbox` | Postfach in Exchange Online, geprüft wird sein Remote-Mailbox-Objekt (Schritt 2). Filtert auch das EWS-Log, und zwar über diese Adresse, die primäre und die Routing-Adresse (im Log steht die Routing-Adresse) |
 | `-OutputPath` | alle Ergebnisse zusätzlich als CSV |
 | `-SkipNetwork` | keine TCP-443-Tests |
-| `-EwsLogFiles` | wie viele der neuesten EWS-Logdateien durchsucht werden, Standard 3 |
+| `-EwsLogFiles` | wie viele der neuesten EWS-Logdateien durchsucht werden, Standard 3. Exchange beginnt etwa stündlich eine neue |
 | `-PassThru` | Ergebnisobjekte zurückgeben |
 
 In der Exchange-Verwaltungsshell ausführen. **Exitcode** `0` = kein FAIL, `1` = mindestens ein FAIL.
@@ -34,13 +34,13 @@ sonst Abbruch an dieser Stelle.
 | 5 | Override der Section `ExchangeOnpremAsThirdPartyAppId` mit `Enabled=true`, organisationsweit, älter als 60 Minuten | `Get-SettingOverride` |
 | 6 | EvoSts-AuthServer mit der App-ID der Dedicated App, nicht der gemeinsamen First-Party-App | `Get-AuthServer` |
 | 7 | Token für genau diese App (`L:<appId>-AS:` in `Detail.FullId`), Auth-Zertifikat gültig, `login.microsoftonline.com` erreichbar | `Test-OAuthConnectivity`, `Get-AuthConfig` |
-| 8 | Weg nach Exchange Online: Graph-Override und Build, Erreichbarkeit von `graph.microsoft.com`, `outlook.office365.com`, `autodiscover-s.outlook.com`, Fehler im EWS-Log (`EXNL`, `ErrorProxy`, `Forbidden`) | `Get-SettingOverride`, TCP, `Logging\Ews` |
+| 8 | Weg nach Exchange Online: Graph-Override und Build, **tatsächlich benutzter Weg** der letzten Abfrage (`Target-…` in `AS.ReqStats`), Erreichbarkeit von `graph.microsoft.com`, `outlook.office365.com`, `autodiscover-s.outlook.com`, Fehler im EWS-Log (`EXNL`, `ErrorProxy`, `Forbidden`) | `Get-SettingOverride`, TCP, `Logging\Ews` |
 
 Die Schritte 1 und 9 sind die Sicht des Clients: Erreicht Outlook sein EWS, und enthält die Antwort
 Daten? Dafür ist der [ExchangeTester](../ExchangeTester/) da, Reiter Free/Busy, Richtung
 On-Prem → EXO.
 
-**Zwei Dinge, die man leicht übersieht:**
+**Drei Dinge, die man leicht übersieht:**
 
 - **Der HCW legt die Dedicated App in Entra an, schaltet sie aber nicht ein.** Dafür ist der
   Override aus Schritt 5 nötig. Das Skript sucht ihn über die Section, nicht über den Namen,
@@ -49,6 +49,10 @@ On-Prem → EXO.
 - **`AdminDisplayVersion` zeigt keine Hotfix-Updates.** Für den eigenen Server liest das Skript
   deshalb die Dateiversion von `ExSetup.exe`. Für andere Server meldet es einen zu niedrigen
   Anzeige-Build nur als WARN.
+- **Ein gesetzter Graph-Override heißt nicht, dass Graph schon benutzt wird.** Der Client sieht den
+  Weg nicht. Das Skript liest ihn aus der letzten Zeile `GetUserAvailability` im EWS-Log:
+  `graph.microsoft.com` ist der Graph-Weg, `outlook.office365.com` der EWS-Weg. Weicht das von der
+  Konfiguration ab, gibt es eine WARN. Ohne passende Zeile erst eine Abfrage On-Prem → EXO auslösen.
 
 Token-Test, Auth-Zertifikat und EWS-Log betreffen **diesen** Server. Laut Microsoft holt der
 Server das Token, auf dem die Shell läuft. Deshalb auf jedem Mailbox-Server laufen lassen, der
