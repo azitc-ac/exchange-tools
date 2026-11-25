@@ -2023,6 +2023,20 @@ function Invoke-SetupWizard {
 #endregion
 
 #region ---------------------------------------------------------------- Teardown
+function Move-FolderAside {
+    <# Moves a folder in ONE step or not at all. Move-Item on a folder is not atomic under Windows
+       PowerShell 5.1: with a file open inside (FileShare Read, no Delete) it throws, but has already
+       moved part of the files - the state folder (account keys, orders) would end up split across
+       two folders. [IO.Directory]::Move is a rename and fails completely. Same volume only, which
+       holds here: the destination is a sibling of the source.
+       Tested in tests\Test-FolderMove.ps1, including a Move-Item counter-check and a rollback mutant. #>
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Destination)
+    $src = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).ProviderPath
+    $dst = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Destination)
+    if (Test-Path -LiteralPath $dst) { throw "Target already exists, nothing moved: $dst" }
+    [System.IO.Directory]::Move($src, $dst)
+}
+
 function Invoke-Teardown {
     # Remove everything the tool created, mirroring -Setup, for a completely fresh start.
     # Needs an interactive admin sign-in for the Azure side (the app's own credential is not
@@ -2128,7 +2142,7 @@ function Invoke-Teardown {
     if ($azureClean) {
         if (Test-Path $homeDir) {
             $bak = "$homeDir.removed-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-            try { Move-Item -LiteralPath $homeDir -Destination $bak; Write-Log "Moved state folder to '$bak' (delete it once you are satisfied)." OK }
+            try { Move-FolderAside -Path $homeDir -Destination $bak; Write-Log "Moved state folder to '$bak' (delete it once you are satisfied)." OK }
             catch { Write-Log "Could not move '$homeDir': $($_.Exception.Message)" WARN }
         }
         if ($ConfigPath -and (Test-Path $ConfigPath)) {
