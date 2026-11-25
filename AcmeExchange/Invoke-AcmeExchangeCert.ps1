@@ -1192,7 +1192,7 @@ function Move-ImportedPfx {
     $archive = Join-Path $s.DropFolder 'archive'
     if (-not (Test-Path $archive)) { New-Item -ItemType Directory -Path $archive -Force | Out-Null; Protect-PfxPath -Path $archive }
     $dest = Join-Path $archive ("{0}_{1}{2}" -f $File.BaseName, (Get-Date -Format 'yyyyMMdd_HHmmss'), $File.Extension)
-    Move-Item $File.FullName $dest -Force
+    Move-Item $File.FullName $dest -Force   # file, not a folder
     Write-Log "PFX moved out of the drop folder: $dest" OK
 }
 
